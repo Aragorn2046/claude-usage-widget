@@ -30,7 +30,7 @@
 
 ```powershell
 # 1. Clone the repo
-git clone https://github.com/ItsMrMetaverse/claude-usage-widget.git
+git clone https://github.com/Aragorn2046/claude-usage-widget.git
 cd claude-usage-widget
 
 # 2. Make sure you've authenticated Claude Code at least once
@@ -131,7 +131,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## Credits
 
-Built by [ItsMrMetaverse](https://github.com/ItsMrMetaverse) and [Claude Code](https://claude.ai/claude-code) (Anthropic).
+Built by [ItsMrMetaverse](https://github.com/Aragorn2046) and [Claude Code](https://claude.ai/claude-code) (Anthropic).
 
 Powered by the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) OAuth API.
 
