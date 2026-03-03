@@ -131,7 +131,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## Credits
 
-Built by [ItsMrMetaverse](https://github.com/Aragorn2046) and [Claude Code](https://claude.ai/claude-code) (Anthropic).
+Built by [ItsMrMetaverse](https://github.com/Aragorn2046), [Yahiya Jasem](https://github.com/yahiya), and [Claude Code](https://claude.ai/claude-code) (Anthropic).
 
 Powered by the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) OAuth API.
 
