@@ -342,6 +342,9 @@ $xaml = @"
                 <TextBlock x:Name="GpuDetail" Text="TEMP: --" Foreground="#8830D158"
                            FontSize="22" FontFamily="Consolas" Margin="200 0 0 12"/>
 
+                <!-- ═══ DISK READOUTS (dynamic — one bar per fixed drive) ═══ -->
+                <StackPanel x:Name="DiskPanel" Margin="0 0 0 0"/>
+
                 <!-- ═══ OUTAGE STATUS DIVIDER ═══ -->
                 <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
                 <TextBlock Text="OUTAGE STATUS" Foreground="#AA30D158"
@@ -477,6 +480,7 @@ $statusApi          = $window.FindName("StatusApi")
 $statusApiLabel     = $window.FindName("StatusApiLabel")
 $statusCode         = $window.FindName("StatusCode")
 $statusCodeLabel    = $window.FindName("StatusCodeLabel")
+$diskPanel          = $window.FindName("DiskPanel")
 
 $barMaxWidth = 520
 
@@ -551,6 +555,19 @@ function Get-SystemMetrics {
         }
     } catch { $metrics.gpuPct = 0; $metrics.gpuTemp = "N/A" }
 
+    # Disk Usage (all fixed local drives)
+    $metrics.disks = @()
+    try {
+        $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        foreach ($d in $drives) {
+            $totalGB = [math]::Round($d.Size / 1GB, 0)
+            $freeGB  = [math]::Round($d.FreeSpace / 1GB, 0)
+            $usedGB  = $totalGB - $freeGB
+            $pct     = if ($totalGB -gt 0) { [math]::Round(($usedGB / $totalGB) * 100, 0) } else { 0 }
+            $metrics.disks += @{ letter = $d.DeviceID.TrimEnd(':'); pct = $pct; usedGB = $usedGB; totalGB = $totalGB }
+        }
+    } catch { $metrics.disks = @() }
+
     return $metrics
 }
 
@@ -617,6 +634,68 @@ function Update-SysMetrics {
     $gpuTempStr = if ($sys.gpuTemp -eq "N/A") { "N/A" } else { "$($sys.gpuTemp)$([char]176)C" }
     $gpuDetail.Text       = "TEMP: $gpuTempStr"
     $gpuDetail.Foreground = $bc.ConvertFrom((Get-TempColor $sys.gpuTemp))
+
+    # Disks (dynamic — one bar per fixed drive)
+    $diskPanel.Children.Clear()
+    foreach ($disk in $sys.disks) {
+        $dc = Get-WYColor $disk.pct
+
+        # Bar row: 3-column Grid (label | bar track | percentage)
+        $grid = New-Object System.Windows.Controls.Grid
+        $grid.Margin = [System.Windows.Thickness]::new(0,0,0,4)
+        $col1 = New-Object System.Windows.Controls.ColumnDefinition; $col1.Width = "Auto"
+        $col2 = New-Object System.Windows.Controls.ColumnDefinition; $col2.Width = "*"
+        $col3 = New-Object System.Windows.Controls.ColumnDefinition; $col3.Width = "Auto"
+        $grid.ColumnDefinitions.Add($col1)
+        $grid.ColumnDefinitions.Add($col2)
+        $grid.ColumnDefinitions.Add($col3)
+
+        # Drive letter label
+        $lbl = New-Object System.Windows.Controls.TextBlock
+        $lbl.Text = "$($disk.letter):"
+        $lbl.Foreground = $bc.ConvertFrom("#CC30D158")
+        $lbl.FontSize = 26; $lbl.FontFamily = "Consolas"; $lbl.FontWeight = "Bold"
+        $lbl.Width = 200; $lbl.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($lbl, 0)
+        $grid.Children.Add($lbl) | Out-Null
+
+        # Bar track + fill
+        $track = New-Object System.Windows.Controls.Border
+        $track.Background = $bc.ConvertFrom("#15309958")
+        $track.CornerRadius = [System.Windows.CornerRadius]::new(1)
+        $track.Height = 28
+        $track.Margin = [System.Windows.Thickness]::new(8,0,12,0)
+        $track.VerticalAlignment = "Center"
+        $track.BorderBrush = $bc.ConvertFrom("#3330D158")
+        $track.BorderThickness = [System.Windows.Thickness]::new(1)
+        [System.Windows.Controls.Grid]::SetColumn($track, 1)
+        $bar = New-Object System.Windows.Controls.Border
+        $bar.Background = $bc.ConvertFrom($dc.bar)
+        $bar.Width = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($disk.pct, 100) / 100))
+        $bar.CornerRadius = [System.Windows.CornerRadius]::new(0)
+        $bar.HorizontalAlignment = "Left"
+        $track.Child = $bar
+        $grid.Children.Add($track) | Out-Null
+
+        # Percentage label
+        $pctLbl = New-Object System.Windows.Controls.TextBlock
+        $pctLbl.Text = "$($disk.pct)%"
+        $pctLbl.Foreground = $bc.ConvertFrom($dc.text)
+        $pctLbl.FontSize = 18; $pctLbl.FontWeight = "Bold"; $pctLbl.FontFamily = "Consolas"
+        $pctLbl.Width = 100; $pctLbl.TextAlignment = "Right"; $pctLbl.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($pctLbl, 2)
+        $grid.Children.Add($pctLbl) | Out-Null
+
+        $diskPanel.Children.Add($grid) | Out-Null
+
+        # Detail line: used/total GB
+        $detail = New-Object System.Windows.Controls.TextBlock
+        $detail.Text = "$($disk.usedGB)/$($disk.totalGB) GB"
+        $detail.Foreground = $bc.ConvertFrom($dc.text)
+        $detail.FontSize = 22; $detail.FontFamily = "Consolas"
+        $detail.Margin = [System.Windows.Thickness]::new(200,0,0,10)
+        $diskPanel.Children.Add($detail) | Out-Null
+    }
 }
 
 function Update-Widget {
