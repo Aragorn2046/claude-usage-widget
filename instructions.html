@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Claude Usage Monitor - Setup Guide</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; color: #1e1e2e; line-height: 1.55; padding: 32px 40px; max-width: 800px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1e1e2e; margin-bottom: 4px; }
+  h1 span { color: #7287b5; }
+  .subtitle { color: #6c7086; font-size: 13px; margin-bottom: 28px; }
+  h2 { font-size: 17px; color: #1e1e2e; margin-top: 28px; margin-bottom: 10px; padding-bottom: 4px; border-bottom: 2px solid #e6e9ef; }
+  h2 .num { display: inline-block; background: #7287b5; color: #fff; width: 24px; height: 24px; border-radius: 12px; text-align: center; font-size: 13px; line-height: 24px; margin-right: 8px; }
+  h3 { font-size: 14px; color: #585b70; margin-top: 16px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  p, li { font-size: 13.5px; }
+  p { margin-bottom: 8px; }
+  ol, ul { margin-left: 20px; margin-bottom: 10px; }
+  li { margin-bottom: 5px; }
+  code { font-family: 'Cascadia Code', 'Consolas', monospace; background: #e6e9ef; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  pre { background: #1e1e2e; color: #cdd6f4; padding: 14px 16px; border-radius: 8px; margin: 10px 0 14px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .card { background: #f5f5fa; border: 1px solid #e6e9ef; border-radius: 8px; padding: 14px 16px; margin: 10px 0; }
+  .card-title { font-weight: 600; font-size: 13px; color: #1e1e2e; margin-bottom: 4px; }
+  .card-desc { font-size: 12.5px; color: #6c7086; }
+  .warn { background: #fef3e2; border: 1px solid #f5d08e; border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12.5px; }
+  .warn b { color: #b07800; }
+  .path-box { background: #e6e9ef; border-radius: 6px; padding: 10px 14px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; margin: 8px 0; word-break: break-all; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+  .badge { display: inline-block; background: #7287b5; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; margin-left: 6px; }
+  hr { border: none; border-top: 1px solid #e6e9ef; margin: 24px 0; }
+  .footer { font-size: 11px; color: #9ca0b0; margin-top: 24px; text-align: center; }
+  .page-break { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<h1><span>&#9673;</span> Claude Usage Monitor</h1>
+<p class="subtitle">Show your Claude.ai usage percentage on Windows or Stream Deck. Pure PowerShell, no dependencies.</p>
+
+<hr>
+
+<h2><span class="num">1</span> What You Need</h2>
+<ul>
+  <li><b>Windows 10 or 11</b></li>
+  <li><b>Claude Pro or Max subscription</b> on <a href="https://claude.ai">claude.ai</a></li>
+  <li><b>Claude Code</b> (free CLI tool) &mdash; this generates the credentials the scripts use</li>
+  <li><b>Stream Deck + "Text File Tools" plugin</b> (only for the Stream Deck version)</li>
+</ul>
+
+<h2><span class="num">2</span> Get Your Credentials (One-Time Setup)</h2>
+<p>The scripts read credentials that <b>Claude Code</b> creates automatically when you log in. You do NOT need any API keys or tokens &mdash; just install Claude Code and authenticate.</p>
+
+<h3>Step A &mdash; Install Claude Code</h3>
+<ol>
+  <li>Open a terminal (PowerShell or Command Prompt)</li>
+  <li>Run:
+    <pre><code>npm install -g @anthropic-ai/claude-code</code></pre>
+    <p style="font-size:12px; color:#6c7086;">(Requires <a href="https://nodejs.org">Node.js</a> 18+. If you don't have npm, install Node.js first.)</p>
+  </li>
+</ol>
+
+<h3>Step B &mdash; Authenticate</h3>
+<ol>
+  <li>Run:
+    <pre><code>claude</code></pre>
+  </li>
+  <li>A browser window will open. <b>Sign in with your Claude.ai account</b> (the same Pro/Max account).</li>
+  <li>Approve the permissions when prompted.</li>
+  <li>Done. You can close Claude Code now.</li>
+</ol>
+
+<p>This creates a credentials file at:</p>
+<div class="path-box">C:\Users\YOUR_USERNAME\.claude\.credentials.json</div>
+
+<div class="warn">
+  <b>&#9888; Do NOT share this file.</b> It contains your personal OAuth tokens. The scripts read it automatically &mdash; you never need to open or edit it.
+</div>
+
+<h3>Where Are The Keys?</h3>
+<p>There are no manual keys to copy or paste. The credential file is created and managed automatically by Claude Code. It contains:</p>
+<ul>
+  <li><code>accessToken</code> &mdash; short-lived token for API calls (auto-refreshed by the scripts)</li>
+  <li><code>refreshToken</code> &mdash; long-lived token used to get new access tokens</li>
+  <li><code>expiresAt</code> &mdash; when the access token expires</li>
+  <li><code>subscriptionType</code> &mdash; your plan (pro, max, etc.)</li>
+</ul>
+<p>If the scripts ever show <code>?</code> or an error, just run <code>claude</code> in a terminal again to refresh your authentication.</p>
+
+<hr>
+
+<h2><span class="num">3</span> Choose Your Version</h2>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">&#128187; Windows Popup <span class="badge">windows/</span></div>
+    <div class="card-desc">Click to see a dark popup with both 5-hour and 7-day usage bars. Auto-closes after 10 seconds.</div>
+  </div>
+  <div class="card">
+    <div class="card-title">&#127918; Stream Deck Live <span class="badge">streamdeck/</span></div>
+    <div class="card-desc">Always-on display. Shows usage % directly on Stream Deck buttons, updating every 60 seconds.</div>
+  </div>
+</div>
+
+<hr>
+
+<h2><span class="num">4</span> Setup: Windows Popup</h2>
+<p>Copy the <code>windows/</code> folder anywhere you like.</p>
+
+<h3>Run manually</h3>
+<p>Double-click <code>usage.ps1</code>, or run:</p>
+<pre><code>powershell.exe -ExecutionPolicy Bypass -File "C:\path\to\windows\usage.ps1"</code></pre>
+
+<h3>Run from Stream Deck</h3>
+<p>Add a <b>System &gt; Open</b> action with this command:</p>
+<pre><code>powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\windows\usage.ps1"</code></pre>
+
+<h3>Controls</h3>
+<ul>
+  <li><b>ESC</b> or <b>click anywhere</b> to close</li>
+  <li>Auto-closes after 10 seconds</li>
+</ul>
+
+<hr>
+
+<h2><span class="num">5</span> Setup: Stream Deck Live Display</h2>
+
+<h3>Step A &mdash; Install the plugin</h3>
+<ol>
+  <li>Open the <b>Stream Deck</b> app</li>
+  <li>Go to the <b>Stream Deck Store</b> (bottom-right corner)</li>
+  <li>Search for <b>"Text File Tools"</b> by BarRaider</li>
+  <li>Install it (free)</li>
+</ol>
+
+<h3>Step B &mdash; Copy the files</h3>
+<p>Copy the <code>streamdeck/</code> folder to a permanent location, for example:</p>
+<div class="path-box">C:\Users\YOUR_USERNAME\StreamDeck\claude-usage\</div>
+
+<h3>Step C &mdash; Start the background monitor</h3>
+<p>Add a Stream Deck button (<b>System &gt; Open</b>) with this command:</p>
+<pre><code>powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\streamdeck\usage-monitor.ps1"</code></pre>
+<p>Press it once to start the monitor. It runs silently in the background and prevents duplicate instances, so pressing it again is harmless.</p>
+
+<h3>Step D &mdash; Add the display buttons</h3>
+<p>Drag <b>"Text File Monitor"</b> (from Text File Tools) onto two buttons:</p>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">5-Hour Button</div>
+    <div class="card-desc">
+      File path:<br>
+      <code style="font-size:11px;">C:\...\streamdeck\usage-5h.txt</code>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">7-Day Button</div>
+    <div class="card-desc">
+      File path:<br>
+      <code style="font-size:11px;">C:\...\streamdeck\usage-7d.txt</code>
+    </div>
+  </div>
+</div>
+
+<p>Set the button title to <b>"5h"</b> and <b>"7d"</b> respectively so you can tell them apart. The percentage will update every 60 seconds.</p>
+
+<h3>Optional: Auto-start at login</h3>
+<ol>
+  <li>Press <b>Win + R</b>, type <code>shell:startup</code>, press Enter</li>
+  <li>Create a shortcut in that folder pointing to:
+    <pre><code>powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\streamdeck\usage-monitor.ps1"</code></pre>
+  </li>
+  <li>The monitor will now start automatically when you log in.</li>
+</ol>
+
+<hr>
+
+<h2><span class="num">6</span> Troubleshooting</h2>
+
+<table style="width:100%; font-size:13px; border-collapse:collapse; margin-top:8px;">
+  <tr style="border-bottom:1px solid #e6e9ef;">
+    <td style="padding:8px 10px; font-weight:600; width:30%;">Button shows <code>?</code></td>
+    <td style="padding:8px 10px;">Token expired or credentials missing. Run <code>claude</code> in a terminal to re-authenticate.</td>
+  </tr>
+  <tr style="border-bottom:1px solid #e6e9ef;">
+    <td style="padding:8px 10px; font-weight:600;">Button shows <code>ERR</code></td>
+    <td style="padding:8px 10px;">Network error or API issue. Check your internet connection. The monitor will retry every 60 seconds.</td>
+  </tr>
+  <tr style="border-bottom:1px solid #e6e9ef;">
+    <td style="padding:8px 10px; font-weight:600;">Button not updating</td>
+    <td style="padding:8px 10px;">The monitor process may have stopped. Press the start button again. If it still doesn't work, open Task Manager, end any <code>powershell.exe</code> running <code>usage-monitor.ps1</code>, then re-launch.</td>
+  </tr>
+  <tr>
+    <td style="padding:8px 10px; font-weight:600;">Popup shows error</td>
+    <td style="padding:8px 10px;">Same fix: run <code>claude</code> in a terminal to refresh authentication.</td>
+  </tr>
+</table>
+
+<hr>
+
+<div class="footer">
+  Claude Usage Monitor &bull; Pure PowerShell &bull; No dependencies &bull; Windows 10/11
+</div>
+
+</body>
+</html>

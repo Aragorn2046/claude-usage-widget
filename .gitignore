@@ -1,0 +1,6 @@
+# Runtime state — user-specific
+windows/usage-widget-settings.json
+
+# Stream Deck output files — generated at runtime
+streamdeck/usage-5h.txt
+streamdeck/usage-7d.txt
