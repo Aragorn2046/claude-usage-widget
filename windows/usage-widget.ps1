@@ -117,7 +117,7 @@ function Get-UsageData {
 $settingsPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "usage-widget-settings.json"
 
 function Load-Settings {
-    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false }
+    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true }
     if (Test-Path $script:settingsPath) {
         try {
             $saved = Get-Content $script:settingsPath -Raw | ConvertFrom-Json
@@ -126,6 +126,8 @@ function Load-Settings {
             if ($null -ne $saved.Width)  { $defaults.Width  = $saved.Width }
             if ($null -ne $saved.Height) { $defaults.Height = $saved.Height }
             if ($null -ne $saved.Locked) { $defaults.Locked = $saved.Locked }
+            if ($null -ne $saved.BgOpacity) { $defaults.BgOpacity = $saved.BgOpacity }
+            if ($null -ne $saved.ShowBorder) { $defaults.ShowBorder = $saved.ShowBorder }
         } catch {}
     }
     return $defaults
@@ -138,6 +140,8 @@ function Save-Settings {
         Width  = [math]::Round($window.Width, 0)
         Height = [math]::Round($window.Height, 0)
         Locked = $script:isLocked
+        BgOpacity = $script:bgOpacity
+        ShowBorder = $script:showBorder
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -153,7 +157,7 @@ $xaml = @"
         Background="Transparent" Topmost="False"
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
         Left="20" Top="20">
-    <Border Background="#80080C10" CornerRadius="2" Margin="6"
+    <Border x:Name="OuterBorder" Background="#80080C10" CornerRadius="2" Margin="6"
             BorderBrush="#8830D158" BorderThickness="1.5">
         <Border.Effect>
             <DropShadowEffect BlurRadius="20" Opacity="0.5" ShadowDepth="2" Color="#0A1A0A"/>
@@ -481,8 +485,29 @@ $statusApiLabel     = $window.FindName("StatusApiLabel")
 $statusCode         = $window.FindName("StatusCode")
 $statusCodeLabel    = $window.FindName("StatusCodeLabel")
 $diskPanel          = $window.FindName("DiskPanel")
+$outerBorder        = $window.FindName("OuterBorder")
 
 $barMaxWidth = 520
+
+# ── Appearance state ─────────────────────────────────────────────────────────
+$script:bgOpacity  = $settings.BgOpacity
+$script:showBorder = $settings.ShowBorder
+
+function Apply-Appearance {
+    $bc = [System.Windows.Media.BrushConverter]::new()
+    # Background: #080C10 with variable alpha (0-100% → 0x00-0xFF)
+    $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+    $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
+    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}080C10")
+    # Border
+    if ($script:showBorder) {
+        $outerBorder.BorderBrush = $bc.ConvertFrom("#8830D158")
+        $outerBorder.BorderThickness = [System.Windows.Thickness]::new(1.5)
+    } else {
+        $outerBorder.BorderBrush = $bc.ConvertFrom("#00000000")
+        $outerBorder.BorderThickness = [System.Windows.Thickness]::new(0)
+    }
+}
 
 # ── Outage alert sound ───────────────────────────────────────────────────────
 $script:alertSoundPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "outage-alert.mp3"
@@ -607,9 +632,9 @@ function Get-OutageColor($status) {
     }
 }
 
-function Update-SysMetrics {
+function Update-SysMetrics($precomputed) {
     $bc = [System.Windows.Media.BrushConverter]::new()
-    $sys = Get-SystemMetrics
+    $sys = if ($precomputed) { $precomputed } else { Get-SystemMetrics }
 
     # CPU
     $cc = Get-WYColor $sys.cpuPct
@@ -703,9 +728,9 @@ function Update-SysMetrics {
     }
 }
 
-function Update-Widget {
+function Update-Widget($preUsage, $preOutage) {
     $bc = [System.Windows.Media.BrushConverter]::new()
-    $data = Get-UsageData
+    $data = if ($preUsage) { $preUsage } else { Get-UsageData }
 
     $subDisplay = switch -Wildcard ($data.sub.ToLower()) {
         "*max*"  { "MAX" }
@@ -748,7 +773,7 @@ function Update-Widget {
     }
 
     # ── Outage Status ──
-    $outage = Get-OutageStatus
+    $outage = if ($preOutage) { $preOutage } else { Get-OutageStatus }
     $statusAi.Background       = $bc.ConvertFrom((Get-OutageColor $outage.ai))
     $statusPlatform.Background = $bc.ConvertFrom((Get-OutageColor $outage.platform))
     $statusApi.Background      = $bc.ConvertFrom((Get-OutageColor $outage.api))
@@ -832,8 +857,60 @@ $closeMenuItem.Header = "CLOSE"
 $closeMenuItem.Style = $ctxItemStyleObj
 $closeMenuItem.Add_Click({ $window.Close() })
 
+# Opacity slider menu item
+$opacityMenuItem = New-Object System.Windows.Controls.MenuItem
+$opacityMenuItem.Style = $ctxItemStyleObj
+$opacityMenuItem.Header = "OPACITY"
+$opacityMenuItem.StaysOpenOnClick = $true
+$opacityPanel = New-Object System.Windows.Controls.StackPanel
+$opacityPanel.Orientation = "Horizontal"
+$opacityPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$opacitySlider = New-Object System.Windows.Controls.Slider
+$opacitySlider.Minimum = 0
+$opacitySlider.Maximum = 100
+$opacitySlider.Value = $script:bgOpacity
+$opacitySlider.Width = 140
+$opacitySlider.VerticalAlignment = "Center"
+$opacitySlider.IsSnapToTickEnabled = $true
+$opacitySlider.TickFrequency = 1
+$script:opacityValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:opacityValueLabel.Text = "$($script:bgOpacity)%"
+$script:opacityValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#30D158")
+$script:opacityValueLabel.FontFamily = "Consolas"
+$script:opacityValueLabel.FontSize = 12
+$script:opacityValueLabel.Width = 36
+$script:opacityValueLabel.TextAlignment = "Right"
+$script:opacityValueLabel.VerticalAlignment = "Center"
+$script:opacityValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$opacitySlider.Add_ValueChanged({
+    $script:bgOpacity = [math]::Round($opacitySlider.Value)
+    $script:opacityValueLabel.Text = "$($script:bgOpacity)%"
+    Apply-Appearance
+    Save-Settings
+})
+$opacityPanel.Children.Add($opacitySlider) | Out-Null
+$opacityPanel.Children.Add($script:opacityValueLabel) | Out-Null
+$opacitySubItem = New-Object System.Windows.Controls.MenuItem
+$opacitySubItem.Header = $opacityPanel
+$opacitySubItem.StaysOpenOnClick = $true
+$opacityMenuItem.Items.Add($opacitySubItem) | Out-Null
+
+# Border toggle menu item
+$borderMenuItem = New-Object System.Windows.Controls.MenuItem
+$borderMenuItem.Header = if ($script:showBorder) { "BORDER: ON" } else { "BORDER: OFF" }
+$borderMenuItem.Style = $ctxItemStyleObj
+$borderMenuItem.Add_Click({
+    $script:showBorder = -not $script:showBorder
+    $borderMenuItem.Header = if ($script:showBorder) { "BORDER: ON" } else { "BORDER: OFF" }
+    Apply-Appearance
+    Save-Settings
+})
+
 $ctxMenu.Items.Add($lockMenuItem) | Out-Null
 $ctxMenu.Items.Add($restartMenuItem) | Out-Null
+$ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
+$ctxMenu.Items.Add($opacityMenuItem) | Out-Null
+$ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($closeMenuItem) | Out-Null
 
@@ -849,12 +926,154 @@ $window.Add_MouseRightButtonDown({
 })
 $window.Add_Loaded({
     Apply-LockState
+    Apply-Appearance
     Update-SysMetrics
     Update-Widget
 })
 
-# Save settings on close
-$window.Add_Closing({ Save-Settings })
+# ── Background runspace pool (keeps UI thread free) ──────────────────────────
+$runspacePool = [RunspaceFactory]::CreateRunspacePool(1, 4)
+$runspacePool.Open()
+
+# Self-contained script for system metrics (runs in background runspace)
+$script:sysMetricsScript = @'
+$metrics = @{
+    cpuPct = 0; cpuTemp = "N/A"
+    ramPct = 0; ramUsedGB = 0; ramTotalGB = 0
+    gpuPct = 0; gpuTemp = "N/A"
+    disks = @()
+}
+try {
+    $sample = (Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples[0].CookedValue
+    $metrics.cpuPct = [math]::Round($sample, 0)
+} catch {
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -ExpandProperty LoadPercentage
+        if ($cpu -is [array]) { $cpu = ($cpu | Measure-Object -Average).Average }
+        $metrics.cpuPct = [math]::Round($cpu, 0)
+    } catch { $metrics.cpuPct = 0 }
+}
+try {
+    $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
+    $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
+    if ($temps) { $metrics.cpuTemp = [math]::Round(($temps | Measure-Object -Average).Average, 0) }
+} catch {
+    try {
+        $tz = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop
+        if ($tz) {
+            $kelvin = if ($tz -is [array]) { ($tz | Measure-Object -Property CurrentTemperature -Average).Average } else { $tz.CurrentTemperature }
+            $metrics.cpuTemp = [math]::Round(($kelvin / 10) - 273.15, 0)
+        }
+    } catch { $metrics.cpuTemp = "N/A" }
+}
+try {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $totalKB = $os.TotalVisibleMemorySize; $freeKB = $os.FreePhysicalMemory; $usedKB = $totalKB - $freeKB
+    $metrics.ramTotalGB = [math]::Round($totalKB / 1MB, 0)
+    $metrics.ramUsedGB  = [math]::Round($usedKB / 1MB, 0)
+    $metrics.ramPct     = [math]::Round(($usedKB / $totalKB) * 100, 0)
+} catch {}
+try {
+    $nvsmi = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>$null
+    if ($nvsmi) {
+        $parts = $nvsmi.Trim().Split(',')
+        $metrics.gpuPct  = [math]::Round([double]$parts[0].Trim(), 0)
+        $metrics.gpuTemp = [math]::Round([double]$parts[1].Trim(), 0)
+    }
+} catch { $metrics.gpuPct = 0; $metrics.gpuTemp = "N/A" }
+try {
+    $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+    foreach ($d in $drives) {
+        $totalGB = [math]::Round($d.Size / 1GB, 0); $freeGB = [math]::Round($d.FreeSpace / 1GB, 0)
+        $usedGB = $totalGB - $freeGB
+        $pct = if ($totalGB -gt 0) { [math]::Round(($usedGB / $totalGB) * 100, 0) } else { 0 }
+        $metrics.disks += @{ letter = $d.DeviceID.TrimEnd(':'); pct = $pct; usedGB = $usedGB; totalGB = $totalGB }
+    }
+} catch { $metrics.disks = @() }
+return $metrics
+'@
+
+# Self-contained script for usage + outage (runs in background runspace)
+$script:usageOutageScript = @'
+param($credPath, $clientId)
+function Refresh-TokenBg($creds) {
+    $rt = $creds.claudeAiOauth.refreshToken; if (-not $rt) { return $null }
+    try {
+        $body = @{ grant_type = "refresh_token"; refresh_token = $rt; client_id = $clientId }
+        $resp = Invoke-RestMethod -Uri "https://console.anthropic.com/v1/oauth/token" -Method POST -ContentType "application/x-www-form-urlencoded" -Body $body -ErrorAction Stop
+        $creds.claudeAiOauth.accessToken = $resp.access_token
+        $creds.claudeAiOauth.refreshToken = $resp.refresh_token
+        $creds.claudeAiOauth.expiresAt = [DateTimeOffset]::UtcNow.AddSeconds($resp.expires_in).ToUnixTimeMilliseconds()
+        $creds | ConvertTo-Json -Depth 10 | Set-Content $credPath -Encoding UTF8
+        return $resp.access_token
+    } catch { return $null }
+}
+$unknownOutage = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
+if (-not (Test-Path $credPath)) {
+    return @{ usage = @{ error = "NO CREDENTIALS FOUND"; sub = "UNKNOWN" }; outage = $unknownOutage }
+}
+$creds = Get-Content $credPath -Raw | ConvertFrom-Json
+$token = $creds.claudeAiOauth.accessToken
+$subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.subscriptionType } else { "UNKNOWN" }
+$nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+if ($creds.claudeAiOauth.expiresAt -and $nowMs -ge $creds.claudeAiOauth.expiresAt) {
+    $token = Refresh-TokenBg $creds
+    if (-not $token) { return @{ usage = @{ error = "TOKEN EXPIRED"; sub = $subType }; outage = $unknownOutage } }
+}
+$headers = @{ "Authorization" = "Bearer $token"; "anthropic-beta" = "oauth-2025-04-20"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
+$usageData = $null
+try {
+    $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -ErrorAction Stop
+} catch {
+    if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+        $newToken = Refresh-TokenBg $creds
+        if ($newToken) {
+            $headers["Authorization"] = "Bearer $newToken"
+            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -ErrorAction Stop }
+            catch { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
+        } else { $usageData = @{ error = "AUTH FAILURE"; sub = $subType } }
+    } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
+}
+if (-not $usageData) {
+    $now = [DateTime]::Now
+    $fiveHourPct = [math]::Round($resp.five_hour.utilization, 1)
+    $sevenDayPct = [math]::Round($resp.seven_day.utilization, 1)
+    $fiveReset = [DateTimeOffset]::Parse($resp.five_hour.resets_at).LocalDateTime
+    $fiveDiff = $fiveReset - $now
+    $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" } elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" } else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
+    $sevenResetStr = ""
+    if ($resp.seven_day) {
+        $sevenReset = [DateTimeOffset]::Parse($resp.seven_day.resets_at).LocalDateTime
+        $sevenDiff = $sevenReset - $now
+        $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" } elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" } elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" } else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
+    }
+    $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr }
+}
+$outageData = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
+$idMap = @{ "rwppv331jlwc" = "ai"; "0qbwn08sd68x" = "platform"; "k8w3r06qmzrp" = "api"; "yyzkbfz2thpt" = "code" }
+try {
+    $statusResp = Invoke-RestMethod -Uri "https://status.claude.com/api/v2/components.json" -Method GET -ErrorAction Stop -TimeoutSec 10
+    foreach ($comp in $statusResp.components) {
+        if ($idMap.ContainsKey($comp.id)) { $outageData[$idMap[$comp.id]] = $comp.status }
+    }
+} catch {}
+return @{ usage = $usageData; outage = $outageData }
+'@
+
+# Background job tracking
+$script:sysJob = $null
+$script:usageJob = $null
+$script:sysTicks = 0
+$script:usageTicks = 0
+
+# Save settings on close + cleanup runspaces
+$window.Add_Closing({
+    Save-Settings
+    $pollTimer.Stop()
+    if ($script:sysJob)   { try { $script:sysJob.PS.Stop(); $script:sysJob.PS.Dispose() } catch {} }
+    if ($script:usageJob) { try { $script:usageJob.PS.Stop(); $script:usageJob.PS.Dispose() } catch {} }
+    $runspacePool.Close()
+})
 
 # Debounced save on move/resize (avoids disk thrash during drag)
 $saveTimer = [System.Windows.Threading.DispatcherTimer]::new()
@@ -863,17 +1082,56 @@ $saveTimer.Add_Tick({ $saveTimer.Stop(); Save-Settings })
 $window.Add_LocationChanged({ $saveTimer.Stop(); $saveTimer.Start() })
 $window.Add_SizeChanged({ $saveTimer.Stop(); $saveTimer.Start() })
 
-# System metrics timer — 10s (cheap local queries)
-$sysTimer = [System.Windows.Threading.DispatcherTimer]::new()
-$sysTimer.Interval = [TimeSpan]::FromSeconds(10)
-$sysTimer.Add_Tick({ Update-SysMetrics })
-$sysTimer.Start()
+# ── Async poll timer — checks for completed background jobs (every 1s) ──────
+$pollTimer = [System.Windows.Threading.DispatcherTimer]::new()
+$pollTimer.Interval = [TimeSpan]::FromSeconds(1)
+$pollTimer.Add_Tick({
+    $script:sysTicks++
+    $script:usageTicks++
 
-# Usage + outage status timer — 60s (API calls)
-$timer = [System.Windows.Threading.DispatcherTimer]::new()
-$timer.Interval = [TimeSpan]::FromSeconds(60)
-$timer.Add_Tick({ Update-Widget })
-$timer.Start()
+    # Check sys metrics job completion
+    if ($script:sysJob -and $script:sysJob.Handle.IsCompleted) {
+        try {
+            $result = $script:sysJob.PS.EndInvoke($script:sysJob.Handle)
+            if ($result -and $result.Count -gt 0) { Update-SysMetrics $result[0] }
+        } catch {} finally {
+            $script:sysJob.PS.Dispose()
+            $script:sysJob = $null
+        }
+    }
+
+    # Check usage+outage job completion
+    if ($script:usageJob -and $script:usageJob.Handle.IsCompleted) {
+        try {
+            $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
+            if ($result -and $result.Count -gt 0) {
+                Update-Widget $result[0].usage $result[0].outage
+            }
+        } catch {} finally {
+            $script:usageJob.PS.Dispose()
+            $script:usageJob = $null
+        }
+    }
+
+    # Start sys metrics job every 10s (if not already running)
+    if ($script:sysTicks -ge 10 -and -not $script:sysJob) {
+        $script:sysTicks = 0
+        $ps = [PowerShell]::Create()
+        $ps.RunspacePool = $runspacePool
+        $ps.AddScript($script:sysMetricsScript) | Out-Null
+        $script:sysJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
+    }
+
+    # Start usage+outage job every 60s (if not already running)
+    if ($script:usageTicks -ge 60 -and -not $script:usageJob) {
+        $script:usageTicks = 0
+        $ps = [PowerShell]::Create()
+        $ps.RunspacePool = $runspacePool
+        $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId) | Out-Null
+        $script:usageJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
+    }
+})
+$pollTimer.Start()
 
 # Position: load saved or default to bottom-right
 $window.Add_ContentRendered({
