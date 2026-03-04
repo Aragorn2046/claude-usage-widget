@@ -153,7 +153,7 @@ $xaml = @"
         Background="Transparent" Topmost="False"
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
         Left="20" Top="20">
-    <Border Background="#E6080C10" CornerRadius="2" Margin="6"
+    <Border Background="#80080C10" CornerRadius="2" Margin="6"
             BorderBrush="#8830D158" BorderThickness="1.5">
         <Border.Effect>
             <DropShadowEffect BlurRadius="20" Opacity="0.5" ShadowDepth="2" Color="#0A1A0A"/>
@@ -509,12 +509,17 @@ function Get-SystemMetrics {
         gpuPct = 0; gpuTemp = "N/A"
     }
 
-    # CPU Usage
+    # CPU Usage (true all-core average via performance counter)
     try {
-        $cpu = Get-CimInstance Win32_Processor | Select-Object -ExpandProperty LoadPercentage
-        if ($cpu -is [array]) { $cpu = ($cpu | Measure-Object -Average).Average }
-        $metrics.cpuPct = [math]::Round($cpu, 0)
-    } catch { $metrics.cpuPct = 0 }
+        $sample = (Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples[0].CookedValue
+        $metrics.cpuPct = [math]::Round($sample, 0)
+    } catch {
+        try {
+            $cpu = Get-CimInstance Win32_Processor | Select-Object -ExpandProperty LoadPercentage
+            if ($cpu -is [array]) { $cpu = ($cpu | Measure-Object -Average).Average }
+            $metrics.cpuPct = [math]::Round($cpu, 0)
+        } catch { $metrics.cpuPct = 0 }
+    }
 
     # CPU Temperature
     try {
