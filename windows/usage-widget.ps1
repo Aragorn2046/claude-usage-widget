@@ -7,7 +7,7 @@
 #
 # Right-click: context menu (Lock/Unlock, Refresh, Close). ESC to close.
 # Resizable when unlocked — content scales via ViewBox. Position/size/lock persists.
-# System metrics refresh every 10s; usage + outage status refresh every 60s.
+# System metrics refresh every 3s; usage + outage status refresh every 60s.
 
 #Requires -Version 5.1
 Add-Type -AssemblyName PresentationFramework
@@ -546,7 +546,7 @@ function Get-SystemMetrics {
         } catch { $metrics.cpuPct = 0 }
     }
 
-    # CPU Temperature
+    # CPU Temperature (4 methods: Performance Counter → WMI ACPI → LHM WMI → LHM DLL)
     try {
         $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
         $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
@@ -561,7 +561,37 @@ function Get-SystemMetrics {
                 $kelvin = if ($tz -is [array]) { ($tz | Measure-Object -Property CurrentTemperature -Average).Average } else { $tz.CurrentTemperature }
                 $metrics.cpuTemp = [math]::Round(($kelvin / 10) - 273.15, 0)
             }
-        } catch { $metrics.cpuTemp = "N/A" }
+        } catch {
+            try {
+                $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+                    Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core' -and $_.Value -gt 0 }
+                if ($lhm) {
+                    $avgTemp = ($lhm | Measure-Object -Property Value -Average).Average
+                    $metrics.cpuTemp = [math]::Round($avgTemp, 0)
+                }
+            } catch {
+                try {
+                    $lhmDll = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll'
+                    if (Test-Path $lhmDll) {
+                        Add-Type -Path $lhmDll -ErrorAction Stop
+                        $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
+                        $computer.IsCpuEnabled = $true
+                        $computer.Open()
+                        $cpuTemps = @()
+                        foreach ($hw in $computer.Hardware) {
+                            $hw.Update()
+                            foreach ($sensor in $hw.Sensors) {
+                                if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
+                                    $cpuTemps += $sensor.Value
+                                }
+                            }
+                        }
+                        if ($cpuTemps.Count -gt 0) { $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0) }
+                        $computer.Close()
+                    }
+                } catch { $metrics.cpuTemp = "N/A" }
+            }
+        }
     }
 
     # RAM Usage
@@ -964,7 +994,34 @@ try {
             $kelvin = if ($tz -is [array]) { ($tz | Measure-Object -Property CurrentTemperature -Average).Average } else { $tz.CurrentTemperature }
             $metrics.cpuTemp = [math]::Round(($kelvin / 10) - 273.15, 0)
         }
-    } catch { $metrics.cpuTemp = "N/A" }
+    } catch {
+        try {
+            $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+                Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core' -and $_.Value -gt 0 }
+            if ($lhm) { $metrics.cpuTemp = [math]::Round(($lhm | Measure-Object -Property Value -Average).Average, 0) }
+        } catch {
+            try {
+                $lhmDll = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll'
+                if (Test-Path $lhmDll) {
+                    Add-Type -Path $lhmDll -ErrorAction Stop
+                    $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
+                    $computer.IsCpuEnabled = $true
+                    $computer.Open()
+                    $cpuTemps = @()
+                    foreach ($hw in $computer.Hardware) {
+                        $hw.Update()
+                        foreach ($sensor in $hw.Sensors) {
+                            if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
+                                $cpuTemps += $sensor.Value
+                            }
+                        }
+                    }
+                    if ($cpuTemps.Count -gt 0) { $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0) }
+                    $computer.Close()
+                }
+            } catch { $metrics.cpuTemp = "N/A" }
+        }
+    }
 }
 try {
     $os = Get-CimInstance Win32_OperatingSystem
@@ -1113,8 +1170,8 @@ $pollTimer.Add_Tick({
         }
     }
 
-    # Start sys metrics job every 10s (if not already running)
-    if ($script:sysTicks -ge 10 -and -not $script:sysJob) {
+    # Start sys metrics job every 3s (if not already running)
+    if ($script:sysTicks -ge 3 -and -not $script:sysJob) {
         $script:sysTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
