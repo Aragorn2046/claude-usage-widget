@@ -970,9 +970,19 @@ $relinkMenuItem = New-Object System.Windows.Controls.MenuItem
 $relinkMenuItem.Header = "RELINK"
 $relinkMenuItem.Style = $ctxItemStyleObj
 $relinkMenuItem.Add_Click({
+    $bc = [System.Windows.Media.BrushConverter]::new()
+    $statusText.Text = "RELINKING"
+    $statusText.Foreground = $bc.ConvertFrom("#AAD1A830")
+    $statusDot.Background  = $bc.ConvertFrom("#D1A830")
+    # Force sync from WSL
     Sync-WslCreds
-    $script:lastGoodUsage = $null
-    Update-Widget
+    # Force token refresh with the new credentials
+    $creds = Load-Creds
+    if ($creds) {
+        $newToken = Refresh-Token $creds
+    }
+    # Now fetch — run in background to avoid blocking UI
+    $script:usageTicks = 60
 })
 
 $restartWidgetMenuItem = New-Object System.Windows.Controls.MenuItem
