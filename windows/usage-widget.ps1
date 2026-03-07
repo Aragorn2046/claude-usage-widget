@@ -168,18 +168,6 @@ $xaml = @"
             <DropShadowEffect BlurRadius="20" Opacity="0.5" ShadowDepth="2" Color="#0A1A0A"/>
         </Border.Effect>
         <Grid>
-            <!-- Scanline overlay -->
-            <Border x:Name="ScanlineOverlay" Opacity="0.03">
-                <Border.Background>
-                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1" SpreadMethod="Repeat"
-                                         MappingMode="Absolute">
-                        <GradientStop Color="#00000000" Offset="0"/>
-                        <GradientStop Color="#20304030" Offset="0.5"/>
-                        <GradientStop Color="#00000000" Offset="1"/>
-                    </LinearGradientBrush>
-                </Border.Background>
-            </Border>
-
             <Viewbox x:Name="ContentViewbox" Stretch="Uniform" StretchDirection="Both">
             <StackPanel Margin="24 18 24 20" Width="900">
 
@@ -452,6 +440,19 @@ $xaml = @"
 
             </StackPanel>
             </Viewbox>
+
+            <!-- Scanline overlay (must be AFTER Viewbox for correct Z-order) -->
+            <Border x:Name="ScanlineOverlay" Opacity="0.03" IsHitTestVisible="False">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,3" SpreadMethod="Repeat"
+                                         MappingMode="Absolute">
+                        <GradientStop Color="#00000000" Offset="0"/>
+                        <GradientStop Color="#00000000" Offset="0.5"/>
+                        <GradientStop Color="#20000000" Offset="0.5"/>
+                        <GradientStop Color="#20000000" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
         </Grid>
     </Border>
 </Window>
@@ -517,12 +518,12 @@ function Apply-Appearance {
     }
     # Retro Look — phosphor glow + visible CRT scanlines
     if ($script:retroLook) {
-        # Scanlines: 2px repeat — 1px transparent, 1px dark. Full opacity on overlay,
-        # visibility controlled by the gradient alpha itself.
+        # Scanlines: 3px repeat — top half transparent, bottom half dark.
+        # Overlay at full opacity; scanline darkness controlled by gradient alpha.
         $scanlineOverlay.Opacity = 1.0
         $grad = New-Object System.Windows.Media.LinearGradientBrush
         $grad.StartPoint = [System.Windows.Point]::new(0, 0)
-        $grad.EndPoint   = [System.Windows.Point]::new(0, 1)
+        $grad.EndPoint   = [System.Windows.Point]::new(0, 3)
         $grad.SpreadMethod  = [System.Windows.Media.GradientSpreadMethod]::Repeat
         $grad.MappingMode   = [System.Windows.Media.BrushMappingMode]::Absolute
         $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
@@ -530,9 +531,9 @@ function Apply-Appearance {
         $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
             [System.Windows.Media.Color]::FromArgb(0, 0, 0, 0), 0.5))
         $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
-            [System.Windows.Media.Color]::FromArgb(40, 0, 0, 0), 0.5))
+            [System.Windows.Media.Color]::FromArgb(50, 0, 0, 0), 0.5))
         $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
-            [System.Windows.Media.Color]::FromArgb(40, 0, 0, 0), 1.0))
+            [System.Windows.Media.Color]::FromArgb(50, 0, 0, 0), 1.0))
         $scanlineOverlay.Background = $grad
         # Phosphor glow
         $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
@@ -544,18 +545,6 @@ function Apply-Appearance {
     } else {
         # Restore subtle default scanlines
         $scanlineOverlay.Opacity = 0.03
-        $grad = New-Object System.Windows.Media.LinearGradientBrush
-        $grad.StartPoint = [System.Windows.Point]::new(0, 0)
-        $grad.EndPoint   = [System.Windows.Point]::new(0, 1)
-        $grad.SpreadMethod  = [System.Windows.Media.GradientSpreadMethod]::Repeat
-        $grad.MappingMode   = [System.Windows.Media.BrushMappingMode]::Absolute
-        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
-            [System.Windows.Media.Colors]::Transparent, 0.0))
-        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
-            [System.Windows.Media.Color]::FromArgb(0x20, 0x30, 0x40, 0x30), 0.5))
-        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
-            [System.Windows.Media.Colors]::Transparent, 1.0))
-        $scanlineOverlay.Background = $grad
         $contentViewbox.Effect = $null
     }
 }
