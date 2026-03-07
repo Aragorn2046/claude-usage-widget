@@ -77,12 +77,18 @@ function Get-UsageData {
     try {
         $resp = Fetch-Usage $tokenInfo.token
     } catch {
-        if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+        $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+        if ($sc -eq 401 -or $sc -eq 429) {
+            if ($sc -eq 429) { Start-Sleep -Seconds 3 }
             $creds = Load-Creds
             $newToken = Refresh-Token $creds
             if ($newToken) {
                 try { $resp = Fetch-Usage $newToken }
                 catch { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
+            } elseif ($sc -eq 429) {
+                Start-Sleep -Seconds 3
+                try { $resp = Fetch-Usage $tokenInfo.token }
+                catch { return @{ error = "RATE LIMITED"; sub = $tokenInfo.sub } }
             } else { return @{ error = "AUTH FAILURE"; sub = $tokenInfo.sub } }
         } else { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
     }
@@ -552,6 +558,7 @@ function Apply-Appearance {
 # ── Outage alert sound ───────────────────────────────────────────────────────
 $script:alertSoundPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "outage-alert.mp3"
 $script:prevOutage = @{ ai = "operational"; platform = "operational"; api = "operational"; code = "operational" }
+$script:lastGoodUsage = $null
 $script:alertPlayer = New-Object System.Windows.Media.MediaPlayer
 
 function Get-WYColor($pct) {
@@ -811,35 +818,48 @@ function Update-Widget($preUsage, $preOutage) {
     $subLabel.Text = $subDisplay
     $timeStamp.Text = [DateTime]::Now.ToString("HH:mm:ss")
 
+    $displayData = $null
     if ($data.error) {
-        $errorLabel.Text = ">> ERROR: $($data.error)"
-        $errorLabel.Visibility = "Visible"
-        $statusDot.Background  = $bc.ConvertFrom("#D14030")
-        $statusText.Text = "LINK FAILURE"
-        $statusText.Foreground = $bc.ConvertFrom("#AAD14030")
+        if ($script:lastGoodUsage) {
+            $displayData = $script:lastGoodUsage
+            $statusDot.Background  = $bc.ConvertFrom("#D1A830")
+            $statusText.Text = "RETRYING"
+            $statusText.Foreground = $bc.ConvertFrom("#AAD1A830")
+            $errorLabel.Visibility = "Collapsed"
+        } else {
+            $errorLabel.Text = ">> ERROR: $($data.error)"
+            $errorLabel.Visibility = "Visible"
+            $statusDot.Background  = $bc.ConvertFrom("#D14030")
+            $statusText.Text = "LINK FAILURE"
+            $statusText.Foreground = $bc.ConvertFrom("#AAD14030")
+        }
     } else {
+        $displayData = $data
+        $script:lastGoodUsage = $data
         $errorLabel.Visibility = "Collapsed"
         $statusDot.Background  = $bc.ConvertFrom("#30D158")
         $statusText.Text = "LINK ACTIVE"
         $statusText.Foreground = $bc.ConvertFrom("#AA30D158")
+    }
 
+    if ($displayData) {
         # 5-hour
-        $fc = Get-WYColor $data.fivePct
+        $fc = Get-WYColor $displayData.fivePct
         $fiveBrush = $bc.ConvertFrom($fc.bar)
         $fiveBar.Background   = $fiveBrush
-        $fiveBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($data.fivePct, 100) / 100))
-        $fiveLabel.Text       = "$($data.fivePct)%"
+        $fiveBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($displayData.fivePct, 100) / 100))
+        $fiveLabel.Text       = "$($displayData.fivePct)%"
         $fiveLabel.Foreground = $bc.ConvertFrom($fc.text)
-        $fiveReset.Text       = "RESET: $($data.fiveReset)"
+        $fiveReset.Text       = "RESET: $($displayData.fiveReset)"
 
         # 7-day
-        $sc = Get-WYColor $data.sevenPct
+        $sc = Get-WYColor $displayData.sevenPct
         $sevenBrush = $bc.ConvertFrom($sc.bar)
         $sevenBar.Background   = $sevenBrush
-        $sevenBar.Width        = [math]::Max(0, [math]::Round($barMaxWidth * [math]::Min($data.sevenPct, 100) / 100))
-        $sevenLabel.Text       = "$($data.sevenPct)%"
+        $sevenBar.Width        = [math]::Max(0, [math]::Round($barMaxWidth * [math]::Min($displayData.sevenPct, 100) / 100))
+        $sevenLabel.Text       = "$($displayData.sevenPct)%"
         $sevenLabel.Foreground = $bc.ConvertFrom($sc.text)
-        $sevenReset.Text       = "RESET: $($data.sevenReset)"
+        $sevenReset.Text       = "RESET: $($displayData.sevenReset)"
     }
 
     # ── Outage Status ──
@@ -1134,12 +1154,18 @@ $usageData = $null
 try {
     $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
 } catch {
-    if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+    $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+    if ($sc -eq 401 -or $sc -eq 429) {
+        if ($sc -eq 429) { Start-Sleep -Seconds 3 }
         $newToken = Refresh-TokenBg $creds
         if ($newToken) {
             $headers["Authorization"] = "Bearer $newToken"
             try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
             catch { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
+        } elseif ($sc -eq 429) {
+            Start-Sleep -Seconds 3
+            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
+            catch { $usageData = @{ error = "RATE LIMITED"; sub = $subType } }
         } else { $usageData = @{ error = "AUTH FAILURE"; sub = $subType } }
     } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
 }
