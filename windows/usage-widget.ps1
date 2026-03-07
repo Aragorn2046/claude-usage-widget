@@ -61,6 +61,7 @@ function Get-Token {
 function Fetch-Usage($accessToken) {
     $headers = @{
         "Authorization"  = "Bearer $accessToken"
+        "anthropic-beta" = "oauth-2025-04-20"
         "Accept"         = "application/json"
         "User-Agent"     = "claude-usage-widget/1.0"
     }
@@ -1163,7 +1164,7 @@ $subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.sub
 if (-not $token) {
     return @{ usage = @{ error = "NO TOKEN"; sub = $subType }; outage = $unknownOutage }
 }
-$headers = @{ "Authorization" = "Bearer $token"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
+$headers = @{ "Authorization" = "Bearer $token"; "anthropic-beta" = "oauth-2025-04-20"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
 $usageData = $null
 try {
     $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
