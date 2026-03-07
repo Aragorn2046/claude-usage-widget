@@ -47,40 +47,14 @@ function Load-Creds {
     return Get-Content $script:credPath -Raw | ConvertFrom-Json
 }
 
-function Refresh-Token($creds) {
-    $refreshToken = $creds.claudeAiOauth.refreshToken
-    if (-not $refreshToken) { return $null }
-    try {
-        $body = @{
-            grant_type    = "refresh_token"
-            refresh_token = $refreshToken
-            client_id     = $script:clientId
-        }
-        $resp = Invoke-RestMethod `
-            -Uri         "https://console.anthropic.com/v1/oauth/token" `
-            -Method      POST `
-            -ContentType "application/x-www-form-urlencoded" `
-            -Body        $body `
-            -ErrorAction Stop
-
-        $creds.claudeAiOauth.accessToken  = $resp.access_token
-        $creds.claudeAiOauth.refreshToken = $resp.refresh_token
-        $creds.claudeAiOauth.expiresAt    = [DateTimeOffset]::UtcNow.AddSeconds($resp.expires_in).ToUnixTimeMilliseconds()
-        $creds | ConvertTo-Json -Depth 10 | Set-Content $script:credPath -Encoding UTF8
-        return $resp.access_token
-    } catch { return $null }
-}
-
 function Get-Token {
+    # Read-only: widget never refreshes tokens — Claude Code owns the credentials file.
+    # On 401/expiry, widget waits for Claude Code to refresh or user to /login.
     $creds = Load-Creds
     if (-not $creds) { return @{ token = $null; sub = "UNKNOWN"; error = "NO CREDENTIALS FOUND" } }
     $token   = $creds.claudeAiOauth.accessToken
     $subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.subscriptionType } else { "UNKNOWN" }
-    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-    if ($creds.claudeAiOauth.expiresAt -and $nowMs -ge $creds.claudeAiOauth.expiresAt) {
-        $token = Refresh-Token $creds
-        if (-not $token) { return @{ token = $null; sub = $subType; error = "TOKEN EXPIRED" } }
-    }
+    if (-not $token) { return @{ token = $null; sub = $subType; error = "NO TOKEN" } }
     return @{ token = $token; sub = $subType; error = $null }
 }
 
@@ -102,18 +76,16 @@ function Get-UsageData {
         $resp = Fetch-Usage $tokenInfo.token
     } catch {
         $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
-        if ($sc -eq 401 -or $sc -eq 429) {
-            if ($sc -eq 429) { Start-Sleep -Seconds 3 }
+        if ($sc -eq 401) {
+            # Token invalid — re-read file in case Claude Code refreshed it
+            Sync-WslCreds
             $creds = Load-Creds
-            $newToken = Refresh-Token $creds
-            if ($newToken) {
-                try { $resp = Fetch-Usage $newToken }
-                catch { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
-            } elseif ($sc -eq 429) {
-                Start-Sleep -Seconds 3
-                try { $resp = Fetch-Usage $tokenInfo.token }
-                catch { return @{ error = "RATE LIMITED"; sub = $tokenInfo.sub } }
-            } else { return @{ error = "AUTH FAILURE"; sub = $tokenInfo.sub } }
+            if ($creds -and $creds.claudeAiOauth.accessToken -ne $tokenInfo.token) {
+                try { $resp = Fetch-Usage $creds.claudeAiOauth.accessToken }
+                catch { return @{ error = "NEEDS LOGIN"; sub = $tokenInfo.sub } }
+            } else { return @{ error = "NEEDS LOGIN"; sub = $tokenInfo.sub } }
+        } elseif ($sc -eq 429) {
+            return @{ error = "RATE LIMITED"; sub = $tokenInfo.sub }
         } else { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
     }
     try {
@@ -974,14 +946,8 @@ $relinkMenuItem.Add_Click({
     $statusText.Text = "RELINKING"
     $statusText.Foreground = $bc.ConvertFrom("#AAD1A830")
     $statusDot.Background  = $bc.ConvertFrom("#D1A830")
-    # Force sync from WSL
+    # Force sync from WSL and trigger immediate background fetch
     Sync-WslCreds
-    # Force token refresh with the new credentials
-    $creds = Load-Creds
-    if ($creds) {
-        $newToken = Refresh-Token $creds
-    }
-    # Now fetch — run in background to avoid blocking UI
     $script:usageTicks = 60
 })
 
@@ -1180,18 +1146,6 @@ return $metrics
 # Self-contained script for usage + outage (runs in background runspace)
 $script:usageOutageScript = @'
 param($credPath, $clientId, $wslCredPath)
-function Refresh-TokenBg($creds) {
-    $rt = $creds.claudeAiOauth.refreshToken; if (-not $rt) { return $null }
-    try {
-        $body = @{ grant_type = "refresh_token"; refresh_token = $rt; client_id = $clientId }
-        $resp = Invoke-RestMethod -Uri "https://console.anthropic.com/v1/oauth/token" -Method POST -ContentType "application/x-www-form-urlencoded" -Body $body -ErrorAction Stop
-        $creds.claudeAiOauth.accessToken = $resp.access_token
-        $creds.claudeAiOauth.refreshToken = $resp.refresh_token
-        $creds.claudeAiOauth.expiresAt = [DateTimeOffset]::UtcNow.AddSeconds($resp.expires_in).ToUnixTimeMilliseconds()
-        $creds | ConvertTo-Json -Depth 10 | Set-Content $credPath -Encoding UTF8
-        return $resp.access_token
-    } catch { return $null }
-}
 # Sync WSL credentials if newer
 if ($wslCredPath -and (Test-Path $wslCredPath)) {
     $wslTime = (Get-Item $wslCredPath).LastWriteTimeUtc
@@ -1206,10 +1160,8 @@ if (-not (Test-Path $credPath)) {
 $creds = Get-Content $credPath -Raw | ConvertFrom-Json
 $token = $creds.claudeAiOauth.accessToken
 $subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.subscriptionType } else { "UNKNOWN" }
-$nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-if ($creds.claudeAiOauth.expiresAt -and $nowMs -ge $creds.claudeAiOauth.expiresAt) {
-    $token = Refresh-TokenBg $creds
-    if (-not $token) { return @{ usage = @{ error = "TOKEN EXPIRED"; sub = $subType }; outage = $unknownOutage } }
+if (-not $token) {
+    return @{ usage = @{ error = "NO TOKEN"; sub = $subType }; outage = $unknownOutage }
 }
 $headers = @{ "Authorization" = "Bearer $token"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
 $usageData = $null
@@ -1217,18 +1169,19 @@ try {
     $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
 } catch {
     $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
-    if ($sc -eq 401 -or $sc -eq 429) {
-        if ($sc -eq 429) { Start-Sleep -Seconds 3 }
-        $newToken = Refresh-TokenBg $creds
-        if ($newToken) {
-            $headers["Authorization"] = "Bearer $newToken"
+    if ($sc -eq 401) {
+        # Re-read file in case Claude Code refreshed the token
+        if ($wslCredPath -and (Test-Path $wslCredPath)) {
+            try { Copy-Item $wslCredPath $credPath -Force } catch {}
+        }
+        $creds2 = Get-Content $credPath -Raw | ConvertFrom-Json
+        if ($creds2.claudeAiOauth.accessToken -ne $token) {
+            $headers["Authorization"] = "Bearer $($creds2.claudeAiOauth.accessToken)"
             try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
-            catch { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
-        } elseif ($sc -eq 429) {
-            Start-Sleep -Seconds 3
-            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
-            catch { $usageData = @{ error = "RATE LIMITED"; sub = $subType } }
-        } else { $usageData = @{ error = "AUTH FAILURE"; sub = $subType } }
+            catch { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
+        } else { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
+    } elseif ($sc -eq 429) {
+        $usageData = @{ error = "RATE LIMITED"; sub = $subType }
     } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
 }
 if (-not $usageData) {
