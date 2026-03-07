@@ -63,13 +63,12 @@ function Get-Token {
 function Fetch-Usage($accessToken) {
     $headers = @{
         "Authorization"  = "Bearer $accessToken"
-        "anthropic-beta" = "oauth-2025-04-20"
         "Accept"         = "application/json"
         "User-Agent"     = "claude-usage-widget/1.0"
     }
     return Invoke-RestMethod `
         -Uri     "https://api.anthropic.com/api/oauth/usage" `
-        -Headers $headers -Method GET -ErrorAction Stop
+        -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
 }
 
 function Get-UsageData {
@@ -87,29 +86,33 @@ function Get-UsageData {
             } else { return @{ error = "AUTH FAILURE"; sub = $tokenInfo.sub } }
         } else { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
     }
-    $now = [DateTime]::Now
-    $fiveHourPct = [math]::Round($resp.five_hour.utilization, 1)
-    $sevenDayPct = [math]::Round($resp.seven_day.utilization, 1)
+    try {
+        $now = [DateTime]::Now
+        $fiveHourPct = [math]::Round($resp.five_hour.utilization, 1)
+        $sevenDayPct = [math]::Round($resp.seven_day.utilization, 1)
 
-    $fiveReset = [DateTimeOffset]::Parse($resp.five_hour.resets_at).LocalDateTime
-    $fiveDiff  = $fiveReset - $now
-    $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" }
-                    elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" }
-                    else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
+        $fiveReset = [DateTimeOffset]::Parse($resp.five_hour.resets_at).LocalDateTime
+        $fiveDiff  = $fiveReset - $now
+        $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" }
+                        elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" }
+                        else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
 
-    $sevenResetStr = ""
-    if ($resp.seven_day) {
-        $sevenReset = [DateTimeOffset]::Parse($resp.seven_day.resets_at).LocalDateTime
-        $sevenDiff  = $sevenReset - $now
-        $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" }
-                         elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" }
-                         elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" }
-                         else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
-    }
-    return @{
-        error = $null; sub = $tokenInfo.sub
-        fivePct = $fiveHourPct; sevenPct = $sevenDayPct
-        fiveReset = $fiveResetStr; sevenReset = $sevenResetStr
+        $sevenResetStr = ""
+        if ($resp.seven_day) {
+            $sevenReset = [DateTimeOffset]::Parse($resp.seven_day.resets_at).LocalDateTime
+            $sevenDiff  = $sevenReset - $now
+            $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" }
+                             elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" }
+                             elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" }
+                             else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
+        }
+        return @{
+            error = $null; sub = $tokenInfo.sub
+            fivePct = $fiveHourPct; sevenPct = $sevenDayPct
+            fiveReset = $fiveResetStr; sevenReset = $sevenResetStr
+        }
+    } catch {
+        return @{ error = "PARSE ERROR"; sub = $tokenInfo.sub }
     }
 }
 
@@ -512,9 +515,26 @@ function Apply-Appearance {
         $outerBorder.BorderBrush = $bc.ConvertFrom("#00000000")
         $outerBorder.BorderThickness = [System.Windows.Thickness]::new(0)
     }
-    # Retro Look — phosphor glow + enhanced scanlines
+    # Retro Look — phosphor glow + visible CRT scanlines
     if ($script:retroLook) {
-        $scanlineOverlay.Opacity = 0.07
+        # Scanlines: 2px repeat — 1px transparent, 1px dark. Full opacity on overlay,
+        # visibility controlled by the gradient alpha itself.
+        $scanlineOverlay.Opacity = 1.0
+        $grad = New-Object System.Windows.Media.LinearGradientBrush
+        $grad.StartPoint = [System.Windows.Point]::new(0, 0)
+        $grad.EndPoint   = [System.Windows.Point]::new(0, 1)
+        $grad.SpreadMethod  = [System.Windows.Media.GradientSpreadMethod]::Repeat
+        $grad.MappingMode   = [System.Windows.Media.BrushMappingMode]::Absolute
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Color]::FromArgb(0, 0, 0, 0), 0.0))
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Color]::FromArgb(0, 0, 0, 0), 0.5))
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Color]::FromArgb(40, 0, 0, 0), 0.5))
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Color]::FromArgb(40, 0, 0, 0), 1.0))
+        $scanlineOverlay.Background = $grad
+        # Phosphor glow
         $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
         $glow.ShadowDepth = 0
         $glow.BlurRadius = 8
@@ -522,7 +542,20 @@ function Apply-Appearance {
         $glow.Opacity = 0.45
         $contentViewbox.Effect = $glow
     } else {
+        # Restore subtle default scanlines
         $scanlineOverlay.Opacity = 0.03
+        $grad = New-Object System.Windows.Media.LinearGradientBrush
+        $grad.StartPoint = [System.Windows.Point]::new(0, 0)
+        $grad.EndPoint   = [System.Windows.Point]::new(0, 1)
+        $grad.SpreadMethod  = [System.Windows.Media.GradientSpreadMethod]::Repeat
+        $grad.MappingMode   = [System.Windows.Media.BrushMappingMode]::Absolute
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Colors]::Transparent, 0.0))
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Color]::FromArgb(0x20, 0x30, 0x40, 0x30), 0.5))
+        $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
+            [System.Windows.Media.Colors]::Transparent, 1.0))
+        $scanlineOverlay.Background = $grad
         $contentViewbox.Effect = $null
     }
 }
@@ -1107,34 +1140,38 @@ if ($creds.claudeAiOauth.expiresAt -and $nowMs -ge $creds.claudeAiOauth.expiresA
     $token = Refresh-TokenBg $creds
     if (-not $token) { return @{ usage = @{ error = "TOKEN EXPIRED"; sub = $subType }; outage = $unknownOutage } }
 }
-$headers = @{ "Authorization" = "Bearer $token"; "anthropic-beta" = "oauth-2025-04-20"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
+$headers = @{ "Authorization" = "Bearer $token"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
 $usageData = $null
 try {
-    $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -ErrorAction Stop
+    $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
 } catch {
     if ($_.Exception.Response.StatusCode.value__ -eq 401) {
         $newToken = Refresh-TokenBg $creds
         if ($newToken) {
             $headers["Authorization"] = "Bearer $newToken"
-            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -ErrorAction Stop }
+            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
             catch { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
         } else { $usageData = @{ error = "AUTH FAILURE"; sub = $subType } }
     } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
 }
 if (-not $usageData) {
-    $now = [DateTime]::Now
-    $fiveHourPct = [math]::Round($resp.five_hour.utilization, 1)
-    $sevenDayPct = [math]::Round($resp.seven_day.utilization, 1)
-    $fiveReset = [DateTimeOffset]::Parse($resp.five_hour.resets_at).LocalDateTime
-    $fiveDiff = $fiveReset - $now
-    $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" } elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" } else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
-    $sevenResetStr = ""
-    if ($resp.seven_day) {
-        $sevenReset = [DateTimeOffset]::Parse($resp.seven_day.resets_at).LocalDateTime
-        $sevenDiff = $sevenReset - $now
-        $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" } elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" } elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" } else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
+    try {
+        $now = [DateTime]::Now
+        $fiveHourPct = [math]::Round($resp.five_hour.utilization, 1)
+        $sevenDayPct = [math]::Round($resp.seven_day.utilization, 1)
+        $fiveReset = [DateTimeOffset]::Parse($resp.five_hour.resets_at).LocalDateTime
+        $fiveDiff = $fiveReset - $now
+        $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" } elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" } else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
+        $sevenResetStr = ""
+        if ($resp.seven_day) {
+            $sevenReset = [DateTimeOffset]::Parse($resp.seven_day.resets_at).LocalDateTime
+            $sevenDiff = $sevenReset - $now
+            $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" } elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" } elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" } else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
+        }
+        $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr }
+    } catch {
+        $usageData = @{ error = "PARSE ERROR"; sub = $subType }
     }
-    $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr }
 }
 $outageData = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
 $idMap = @{ "rwppv331jlwc" = "ai"; "0qbwn08sd68x" = "platform"; "k8w3r06qmzrp" = "api"; "yyzkbfz2thpt" = "code" }
