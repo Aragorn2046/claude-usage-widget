@@ -16,7 +16,15 @@ Add-Type -AssemblyName PresentationCore
 # ── Credentials & Token ──────────────────────────────────────────────────────
 $credPath = "$env:USERPROFILE\.claude\.credentials.json"
 # WSL credentials path (Claude Code /login writes here; widget reads Windows path)
-$wslCredPath = "\\wsl$\Ubuntu\home\$($env:USERNAME.ToLower())\.claude\.credentials.json"
+# Auto-detect WSL distro name
+$wslCredPath = $null
+try {
+    $wslDistros = @(wsl.exe -l -q 2>$null | ForEach-Object { $_.Trim() -replace "`0","" } | Where-Object { $_ -ne "" })
+    foreach ($distro in $wslDistros) {
+        $candidate = "\\wsl.localhost\$distro\home\$($env:USERNAME.ToLower())\.claude\.credentials.json"
+        if (Test-Path $candidate) { $wslCredPath = $candidate; break }
+    }
+} catch {}
 # Claude Code's public OAuth client ID (ships with every Claude Code install)
 $clientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
