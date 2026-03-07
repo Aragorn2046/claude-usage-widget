@@ -1277,8 +1277,12 @@ $pollTimer.Add_Tick({
         $script:sysJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 
-    # Start usage+outage job every 300s / 5min (if not already running)
-    if ($script:usageTicks -ge 300 -and -not $script:usageJob) {
+    # Start usage+outage job every 180s / 3min (if not already running)
+    # NOTE: The usage API has aggressive rate limiting. Do NOT reduce this interval
+    # below 120s or you will hit 429 errors. During debugging, avoid rapid manual API
+    # calls — even 10-15 calls in a short window can trigger rate limiting that lasts
+    # 10+ minutes. Use a single test call and wait for results.
+    if ($script:usageTicks -ge 180 -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
