@@ -15,10 +15,26 @@ Add-Type -AssemblyName PresentationCore
 
 # ── Credentials & Token ──────────────────────────────────────────────────────
 $credPath = "$env:USERPROFILE\.claude\.credentials.json"
+# WSL credentials path (Claude Code /login writes here; widget reads Windows path)
+$wslCredPath = "\\wsl$\Ubuntu\home\$($env:USERNAME.ToLower())\.claude\.credentials.json"
 # Claude Code's public OAuth client ID (ships with every Claude Code install)
 $clientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+function Sync-WslCreds {
+    # If WSL credentials are newer than Windows, copy them over
+    if (Test-Path $script:wslCredPath) {
+        $wslTime = (Get-Item $script:wslCredPath).LastWriteTimeUtc
+        $winExists = Test-Path $script:credPath
+        if (-not $winExists -or $wslTime -gt (Get-Item $script:credPath).LastWriteTimeUtc) {
+            try {
+                Copy-Item $script:wslCredPath $script:credPath -Force
+            } catch {}
+        }
+    }
+}
+
 function Load-Creds {
+    Sync-WslCreds
     if (-not (Test-Path $script:credPath)) { return $null }
     return Get-Content $script:credPath -Raw | ConvertFrom-Json
 }
@@ -942,6 +958,15 @@ $restartMenuItem.Header = "REFRESH"
 $restartMenuItem.Style = $ctxItemStyleObj
 $restartMenuItem.Add_Click({ Update-SysMetrics; Update-Widget })
 
+$relinkMenuItem = New-Object System.Windows.Controls.MenuItem
+$relinkMenuItem.Header = "RELINK"
+$relinkMenuItem.Style = $ctxItemStyleObj
+$relinkMenuItem.Add_Click({
+    Sync-WslCreds
+    $script:lastGoodUsage = $null
+    Update-Widget
+})
+
 $closeMenuItem = New-Object System.Windows.Controls.MenuItem
 $closeMenuItem.Header = "CLOSE"
 $closeMenuItem.Style = $ctxItemStyleObj
@@ -1009,6 +1034,7 @@ $retroMenuItem.Add_Click({
 
 $ctxMenu.Items.Add($lockMenuItem) | Out-Null
 $ctxMenu.Items.Add($restartMenuItem) | Out-Null
+$ctxMenu.Items.Add($relinkMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($opacityMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
@@ -1124,7 +1150,7 @@ return $metrics
 
 # Self-contained script for usage + outage (runs in background runspace)
 $script:usageOutageScript = @'
-param($credPath, $clientId)
+param($credPath, $clientId, $wslCredPath)
 function Refresh-TokenBg($creds) {
     $rt = $creds.claudeAiOauth.refreshToken; if (-not $rt) { return $null }
     try {
@@ -1136,6 +1162,13 @@ function Refresh-TokenBg($creds) {
         $creds | ConvertTo-Json -Depth 10 | Set-Content $credPath -Encoding UTF8
         return $resp.access_token
     } catch { return $null }
+}
+# Sync WSL credentials if newer
+if ($wslCredPath -and (Test-Path $wslCredPath)) {
+    $wslTime = (Get-Item $wslCredPath).LastWriteTimeUtc
+    if (-not (Test-Path $credPath) -or $wslTime -gt (Get-Item $credPath).LastWriteTimeUtc) {
+        try { Copy-Item $wslCredPath $credPath -Force } catch {}
+    }
 }
 $unknownOutage = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
 if (-not (Test-Path $credPath)) {
@@ -1266,7 +1299,7 @@ $pollTimer.Add_Tick({
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
-        $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId) | Out-Null
+        $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId).AddArgument($wslCredPath) | Out-Null
         $script:usageJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 })
