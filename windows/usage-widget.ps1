@@ -1277,8 +1277,8 @@ $pollTimer.Add_Tick({
         $script:sysJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 
-    # Start usage+outage job every 60s (if not already running)
-    if ($script:usageTicks -ge 60 -and -not $script:usageJob) {
+    # Start usage+outage job every 300s / 5min (if not already running)
+    if ($script:usageTicks -ge 300 -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
