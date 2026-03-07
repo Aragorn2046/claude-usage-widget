@@ -117,7 +117,7 @@ function Get-UsageData {
 $settingsPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "usage-widget-settings.json"
 
 function Load-Settings {
-    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true }
+    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true; RetroLook = $false }
     if (Test-Path $script:settingsPath) {
         try {
             $saved = Get-Content $script:settingsPath -Raw | ConvertFrom-Json
@@ -128,6 +128,7 @@ function Load-Settings {
             if ($null -ne $saved.Locked) { $defaults.Locked = $saved.Locked }
             if ($null -ne $saved.BgOpacity) { $defaults.BgOpacity = $saved.BgOpacity }
             if ($null -ne $saved.ShowBorder) { $defaults.ShowBorder = $saved.ShowBorder }
+            if ($null -ne $saved.RetroLook) { $defaults.RetroLook = $saved.RetroLook }
         } catch {}
     }
     return $defaults
@@ -142,6 +143,7 @@ function Save-Settings {
         Locked = $script:isLocked
         BgOpacity = $script:bgOpacity
         ShowBorder = $script:showBorder
+        RetroLook = $script:retroLook
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -164,7 +166,7 @@ $xaml = @"
         </Border.Effect>
         <Grid>
             <!-- Scanline overlay -->
-            <Border Opacity="0.03">
+            <Border x:Name="ScanlineOverlay" Opacity="0.03">
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="0,1" SpreadMethod="Repeat"
                                          MappingMode="Absolute">
@@ -175,7 +177,7 @@ $xaml = @"
                 </Border.Background>
             </Border>
 
-            <Viewbox Stretch="Uniform" StretchDirection="Both">
+            <Viewbox x:Name="ContentViewbox" Stretch="Uniform" StretchDirection="Both">
             <StackPanel Margin="24 18 24 20" Width="900">
 
                 <!-- ═══ HEADER BAR ═══ -->
@@ -486,12 +488,15 @@ $statusCode         = $window.FindName("StatusCode")
 $statusCodeLabel    = $window.FindName("StatusCodeLabel")
 $diskPanel          = $window.FindName("DiskPanel")
 $outerBorder        = $window.FindName("OuterBorder")
+$scanlineOverlay    = $window.FindName("ScanlineOverlay")
+$contentViewbox     = $window.FindName("ContentViewbox")
 
 $barMaxWidth = 520
 
 # ── Appearance state ─────────────────────────────────────────────────────────
 $script:bgOpacity  = $settings.BgOpacity
 $script:showBorder = $settings.ShowBorder
+$script:retroLook  = $settings.RetroLook
 
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
@@ -506,6 +511,19 @@ function Apply-Appearance {
     } else {
         $outerBorder.BorderBrush = $bc.ConvertFrom("#00000000")
         $outerBorder.BorderThickness = [System.Windows.Thickness]::new(0)
+    }
+    # Retro Look — phosphor glow + enhanced scanlines
+    if ($script:retroLook) {
+        $scanlineOverlay.Opacity = 0.07
+        $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $glow.ShadowDepth = 0
+        $glow.BlurRadius = 8
+        $glow.Color = [System.Windows.Media.Color]::FromRgb(0x30, 0xD1, 0x58)
+        $glow.Opacity = 0.45
+        $contentViewbox.Effect = $glow
+    } else {
+        $scanlineOverlay.Opacity = 0.03
+        $contentViewbox.Effect = $null
     }
 }
 
@@ -936,11 +954,23 @@ $borderMenuItem.Add_Click({
     Save-Settings
 })
 
+# Retro Look toggle menu item
+$retroMenuItem = New-Object System.Windows.Controls.MenuItem
+$retroMenuItem.Header = if ($script:retroLook) { "RETRO: ON" } else { "RETRO: OFF" }
+$retroMenuItem.Style = $ctxItemStyleObj
+$retroMenuItem.Add_Click({
+    $script:retroLook = -not $script:retroLook
+    $retroMenuItem.Header = if ($script:retroLook) { "RETRO: ON" } else { "RETRO: OFF" }
+    Apply-Appearance
+    Save-Settings
+})
+
 $ctxMenu.Items.Add($lockMenuItem) | Out-Null
 $ctxMenu.Items.Add($restartMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($opacityMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
+$ctxMenu.Items.Add($retroMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($closeMenuItem) | Out-Null
 
