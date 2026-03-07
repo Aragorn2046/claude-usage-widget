@@ -975,6 +975,16 @@ $relinkMenuItem.Add_Click({
     Update-Widget
 })
 
+$restartWidgetMenuItem = New-Object System.Windows.Controls.MenuItem
+$restartWidgetMenuItem.Header = "RESTART"
+$restartWidgetMenuItem.Style = $ctxItemStyleObj
+$restartWidgetMenuItem.Add_Click({
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if (-not $scriptPath) { $scriptPath = Join-Path (Split-Path -Parent $script:settingsPath) "usage-widget.ps1" }
+    Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+    $window.Close()
+})
+
 $closeMenuItem = New-Object System.Windows.Controls.MenuItem
 $closeMenuItem.Header = "CLOSE"
 $closeMenuItem.Style = $ctxItemStyleObj
@@ -1048,6 +1058,7 @@ $ctxMenu.Items.Add($opacityMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add($retroMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
+$ctxMenu.Items.Add($restartWidgetMenuItem) | Out-Null
 $ctxMenu.Items.Add($closeMenuItem) | Out-Null
 
 # ── Window behavior ──────────────────────────────────────────────────────────
