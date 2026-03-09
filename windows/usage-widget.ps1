@@ -265,6 +265,14 @@ $xaml = @"
                 <TextBlock x:Name="SevenReset" Text="RESET: --" Foreground="#8830D158"
                            FontSize="22" FontFamily="Consolas" Margin="200 0 0 12"/>
 
+                <!-- ═══ MODEL USAGE DIVIDER ═══ -->
+                <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
+                <TextBlock Text="MODEL BREAKDOWN" Foreground="#AA30D158"
+                           FontSize="20" FontFamily="Consolas" Margin="0 0 0 10"/>
+
+                <!-- ═══ MODEL USAGE ROWS (dynamically populated) ═══ -->
+                <StackPanel x:Name="ModelPanel" Margin="0 0 0 4"/>
+
                 <!-- ═══ SYSTEM METRICS DIVIDER ═══ -->
                 <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
                 <TextBlock Text="SYSTEM METRICS" Foreground="#AA30D158"
@@ -493,6 +501,7 @@ $statusApi          = $window.FindName("StatusApi")
 $statusApiLabel     = $window.FindName("StatusApiLabel")
 $statusCode         = $window.FindName("StatusCode")
 $statusCodeLabel    = $window.FindName("StatusCodeLabel")
+$modelPanel         = $window.FindName("ModelPanel")
 $diskPanel          = $window.FindName("DiskPanel")
 $outerBorder        = $window.FindName("OuterBorder")
 $scanlineOverlay    = $window.FindName("ScanlineOverlay")
@@ -812,6 +821,121 @@ function Update-SysMetrics($precomputed) {
     }
 }
 
+# ── Model Usage ──────────────────────────────────────────────────────────────
+$modelUsagePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "model-usage.json"
+
+function Get-ModelColor($modelName) {
+    switch ($modelName) {
+        "opus"   { return @{ primary = "#30D158"; dim = "#AA30D158"; bg = "#15309958" } }
+        "sonnet" { return @{ primary = "#58A8D1"; dim = "#AA58A8D1"; bg = "#15589958" } }
+        "haiku"  { return @{ primary = "#D1A830"; dim = "#AAD1A830"; bg = "#15D19958" } }
+        default  { return @{ primary = "#8899AA"; dim = "#AA8899AA"; bg = "#15889958" } }
+    }
+}
+
+function Update-ModelUsage {
+    $bc = [System.Windows.Media.BrushConverter]::new()
+    $modelPanel.Children.Clear()
+
+    if (-not (Test-Path $script:modelUsagePath)) {
+        $noData = New-Object System.Windows.Controls.TextBlock
+        $noData.Text = "AWAITING DATA..."
+        $noData.Foreground = $bc.ConvertFrom("#5530D158")
+        $noData.FontSize = 20; $noData.FontFamily = "Consolas"
+        $noData.Margin = [System.Windows.Thickness]::new(0,0,0,8)
+        $modelPanel.Children.Add($noData) | Out-Null
+        return
+    }
+
+    try {
+        $json = Get-Content $script:modelUsagePath -Raw | ConvertFrom-Json
+    } catch { return }
+
+    $models = $json.models
+    if (-not $models) { return }
+
+    foreach ($prop in $models.PSObject.Properties) {
+        $name = $prop.Name
+        $data = $prop.Value
+        $mc = Get-ModelColor $name
+
+        # Model row: NAME   5h: XXXK   today: XXXK   7d: XXXK   (N calls)
+        $row = New-Object System.Windows.Controls.Grid
+        $row.Margin = [System.Windows.Thickness]::new(0,0,0,2)
+        $c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = "120"
+        $c2 = New-Object System.Windows.Controls.ColumnDefinition; $c2.Width = "*"
+        $c3 = New-Object System.Windows.Controls.ColumnDefinition; $c3.Width = "*"
+        $c4 = New-Object System.Windows.Controls.ColumnDefinition; $c4.Width = "*"
+        $c5 = New-Object System.Windows.Controls.ColumnDefinition; $c5.Width = "Auto"
+        $row.ColumnDefinitions.Add($c1)
+        $row.ColumnDefinitions.Add($c2)
+        $row.ColumnDefinitions.Add($c3)
+        $row.ColumnDefinitions.Add($c4)
+        $row.ColumnDefinitions.Add($c5)
+
+        # Model name
+        $lbl = New-Object System.Windows.Controls.TextBlock
+        $lbl.Text = $name.ToUpper()
+        $lbl.Foreground = $bc.ConvertFrom($mc.primary)
+        $lbl.FontSize = 22; $lbl.FontFamily = "Consolas"; $lbl.FontWeight = "Bold"
+        $lbl.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($lbl, 0)
+        $row.Children.Add($lbl) | Out-Null
+
+        # 5h tokens
+        $t5h = New-Object System.Windows.Controls.TextBlock
+        $t5h.Text = "5H: $($data.'5h'.display)"
+        $t5h.Foreground = $bc.ConvertFrom($mc.dim)
+        $t5h.FontSize = 20; $t5h.FontFamily = "Consolas"
+        $t5h.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($t5h, 1)
+        $row.Children.Add($t5h) | Out-Null
+
+        # Today tokens
+        $tToday = New-Object System.Windows.Controls.TextBlock
+        $tToday.Text = "24H: $($data.today.display)"
+        $tToday.Foreground = $bc.ConvertFrom($mc.dim)
+        $tToday.FontSize = 20; $tToday.FontFamily = "Consolas"
+        $tToday.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($tToday, 2)
+        $row.Children.Add($tToday) | Out-Null
+
+        # 7d tokens
+        $t7d = New-Object System.Windows.Controls.TextBlock
+        $t7d.Text = "7D: $($data.'7d'.display)"
+        $t7d.Foreground = $bc.ConvertFrom($mc.dim)
+        $t7d.FontSize = 20; $t7d.FontFamily = "Consolas"
+        $t7d.VerticalAlignment = "Center"
+        [System.Windows.Controls.Grid]::SetColumn($t7d, 3)
+        $row.Children.Add($t7d) | Out-Null
+
+        # Call count
+        $calls = New-Object System.Windows.Controls.TextBlock
+        $calls.Text = "$($data.today.calls)x"
+        $calls.Foreground = $bc.ConvertFrom("#5530D158")
+        $calls.FontSize = 18; $calls.FontFamily = "Consolas"
+        $calls.VerticalAlignment = "Center"; $calls.Margin = [System.Windows.Thickness]::new(8,0,0,0)
+        [System.Windows.Controls.Grid]::SetColumn($calls, 4)
+        $row.Children.Add($calls) | Out-Null
+
+        $modelPanel.Children.Add($row) | Out-Null
+    }
+
+    # Staleness indicator
+    try {
+        $genTime = [DateTimeOffset]::Parse($json.generated_at).LocalDateTime
+        $age = [DateTime]::Now - $genTime
+        if ($age.TotalMinutes -gt 10) {
+            $stale = New-Object System.Windows.Controls.TextBlock
+            $stale.Text = "DATA: $([math]::Round($age.TotalMinutes))MIN OLD"
+            $stale.Foreground = $bc.ConvertFrom("#AAD1A830")
+            $stale.FontSize = 18; $stale.FontFamily = "Consolas"
+            $stale.Margin = [System.Windows.Thickness]::new(0,2,0,0)
+            $modelPanel.Children.Add($stale) | Out-Null
+        }
+    } catch {}
+}
+
 function Update-Widget($preUsage, $preOutage) {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $data = if ($preUsage) { $preUsage } else { Get-UsageData }
@@ -947,7 +1071,7 @@ $lockMenuItem.Add_Click({
 $restartMenuItem = New-Object System.Windows.Controls.MenuItem
 $restartMenuItem.Header = "REFRESH"
 $restartMenuItem.Style = $ctxItemStyleObj
-$restartMenuItem.Add_Click({ Update-SysMetrics; Update-Widget })
+$restartMenuItem.Add_Click({ Update-SysMetrics; Update-ModelUsage; Update-Widget })
 
 $relinkMenuItem = New-Object System.Windows.Controls.MenuItem
 $relinkMenuItem.Header = "RELINK"
@@ -1063,6 +1187,7 @@ $window.Add_Loaded({
     Apply-LockState
     Apply-Appearance
     Update-SysMetrics
+    Update-ModelUsage
     Update-Widget
 })
 
@@ -1274,6 +1399,7 @@ $pollTimer.Add_Tick({
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
                 Update-Widget $result[0].usage $result[0].outage
+                Update-ModelUsage
                 # Exponential backoff on rate limit; reset on success
                 if ($result[0].usage.error -eq "RATE LIMITED") {
                     $script:usageBackoff = if ($script:usageBackoff -lt 60) { 300 } else { [math]::Min($script:usageBackoff * 2, 1800) }
