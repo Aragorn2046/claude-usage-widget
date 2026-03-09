@@ -564,10 +564,20 @@ function Get-WYColor($pct) {
     else { return @{ bar = "#D14030"; text = "#D14030" } }  # red
 }
 
+function Get-SysColor($pct) {
+    # Green-family gradient for system metrics — matches widget design language
+    if ($pct -lt 30)     { return @{ bar = "#1A3A22"; text = "#3A6A42" } }  # very dim green
+    elseif ($pct -lt 50) { return @{ bar = "#1E5A2E"; text = "#4A8A52" } }  # muted green
+    elseif ($pct -lt 70) { return @{ bar = "#238A38"; text = "#30B148" } }  # medium green
+    elseif ($pct -lt 80) { return @{ bar = "#30D158"; text = "#30D158" } }  # full widget green
+    elseif ($pct -lt 90) { return @{ bar = "#D18030"; text = "#D18030" } }  # warm amber
+    else                 { return @{ bar = "#D14030"; text = "#D14030" } }  # red
+}
+
 function Get-TempColor($temp) {
-    if ($null -eq $temp -or $temp -eq "N/A") { return "#8830D158" }
-    if ($temp -lt 60) { return "#30D158" }
-    elseif ($temp -le 80) { return "#D1A830" }
+    if ($null -eq $temp -or $temp -eq "N/A") { return "#883A6A42" }
+    if ($temp -lt 60) { return "#4A8A52" }
+    elseif ($temp -le 80) { return "#30D158" }
     else { return "#D14030" }
 }
 
@@ -711,7 +721,7 @@ function Update-SysMetrics($precomputed) {
     $sys = if ($precomputed) { $precomputed } else { Get-SystemMetrics }
 
     # CPU
-    $cc = Get-WYColor $sys.cpuPct
+    $cc = Get-SysColor $sys.cpuPct
     $cpuBar.Background   = $bc.ConvertFrom($cc.bar)
     $cpuBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.cpuPct, 100) / 100))
     $cpuLabel.Text       = "$($sys.cpuPct)%"
@@ -721,7 +731,7 @@ function Update-SysMetrics($precomputed) {
     $cpuDetail.Foreground = $bc.ConvertFrom((Get-TempColor $sys.cpuTemp))
 
     # RAM
-    $rc = Get-WYColor $sys.ramPct
+    $rc = Get-SysColor $sys.ramPct
     $ramBar.Background   = $bc.ConvertFrom($rc.bar)
     $ramBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.ramPct, 100) / 100))
     $ramLabel.Text       = "$($sys.ramPct)%"
@@ -730,7 +740,7 @@ function Update-SysMetrics($precomputed) {
     $ramDetail.Foreground = $bc.ConvertFrom($rc.text)
 
     # GPU
-    $gc = Get-WYColor $sys.gpuPct
+    $gc = Get-SysColor $sys.gpuPct
     $gpuBar.Background   = $bc.ConvertFrom($gc.bar)
     $gpuBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.gpuPct, 100) / 100))
     $gpuLabel.Text       = "$($sys.gpuPct)%"
@@ -742,7 +752,7 @@ function Update-SysMetrics($precomputed) {
     # Disks (dynamic — one bar per fixed drive)
     $diskPanel.Children.Clear()
     foreach ($disk in $sys.disks) {
-        $dc = Get-WYColor $disk.pct
+        $dc = Get-SysColor $disk.pct
 
         # Bar row: 3-column Grid (label | bar track | percentage)
         $grid = New-Object System.Windows.Controls.Grid
@@ -949,7 +959,8 @@ $relinkMenuItem.Add_Click({
     $statusDot.Background  = $bc.ConvertFrom("#D1A830")
     # Force sync from WSL and trigger immediate background fetch
     Sync-WslCreds
-    $script:usageTicks = 60
+    $script:usageBackoff = 0
+    $script:usageTicks = [math]::Max($script:usageInterval - 10, 0)
 })
 
 $restartWidgetMenuItem = New-Object System.Windows.Controls.MenuItem
@@ -1220,6 +1231,8 @@ $script:sysJob = $null
 $script:usageJob = $null
 $script:sysTicks = 0
 $script:usageTicks = 0
+$script:usageInterval = 300          # Base: 5 min (safe for 2 machines)
+$script:usageBackoff = 0             # Extra seconds added on 429
 
 # Save settings on close + cleanup runspaces
 $window.Add_Closing({
@@ -1261,6 +1274,12 @@ $pollTimer.Add_Tick({
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
                 Update-Widget $result[0].usage $result[0].outage
+                # Exponential backoff on rate limit; reset on success
+                if ($result[0].usage.error -eq "RATE LIMITED") {
+                    $script:usageBackoff = if ($script:usageBackoff -lt 60) { 300 } else { [math]::Min($script:usageBackoff * 2, 1800) }
+                } else {
+                    $script:usageBackoff = 0
+                }
             }
         } catch {} finally {
             $script:usageJob.PS.Dispose()
@@ -1277,12 +1296,11 @@ $pollTimer.Add_Tick({
         $script:sysJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 
-    # Start usage+outage job every 180s / 3min (if not already running)
+    # Start usage+outage job every 300s / 5min (safe for 2 machines polling same API)
     # NOTE: The usage API has aggressive rate limiting. Do NOT reduce this interval
-    # below 120s or you will hit 429 errors. During debugging, avoid rapid manual API
-    # calls — even 10-15 calls in a short window can trigger rate limiting that lasts
-    # 10+ minutes. Use a single test call and wait for results.
-    if ($script:usageTicks -ge 180 -and -not $script:usageJob) {
+    # below 120s or you will hit 429 errors. With backoff, 429s delay the next poll
+    # by up to 30 min (exponential: 300s → 600s → 1200s → 1800s cap).
+    if ($script:usageTicks -ge ($script:usageInterval + $script:usageBackoff) -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
