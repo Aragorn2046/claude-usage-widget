@@ -549,24 +549,59 @@ $script:showElevenLabs = $settings.ShowElevenLabs
 
 # ── ElevenLabs API key (read from WSL claude-voice config) ────────────────────
 $script:elevenLabsApiKey = $null
-try {
-    $wslDistros2 = @(wsl.exe -l -q 2>$null | ForEach-Object { $_.Trim() -replace "`0","" } | Where-Object { $_ -ne "" })
+
+# Helper: read wsl.exe -l -q output as proper UTF-16LE (wsl.exe outputs UTF-16LE,
+# but PowerShell's pipeline treats it as ASCII causing "U b u n t u" spacing)
+function Get-WslDistros {
+    try {
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo.FileName = 'wsl.exe'
+        $p.StartInfo.Arguments = '-l -q'
+        $p.StartInfo.UseShellExecute = $false
+        $p.StartInfo.RedirectStandardOutput = $true
+        $p.StartInfo.StandardOutputEncoding = [System.Text.Encoding]::Unicode
+        $p.Start() | Out-Null
+        $out = $p.StandardOutput.ReadToEnd()
+        $p.WaitForExit()
+        return @($out -split "[\r\n]+" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    } catch {
+        return @()
+    }
+}
+
+# Helper: extract ElevenLabs key from a config.json path
+function Get-ElevenLabsKeyFromConfig([string]$cfgPath) {
+    if (-not (Test-Path $cfgPath)) { return $null }
+    try {
+        $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        if ($cfg.elevenlabs_usage_key) { return $cfg.elevenlabs_usage_key }
+        if ($cfg.elevenlabs_api_key)   { return $cfg.elevenlabs_api_key }
+    } catch {}
+    return $null
+}
+
+$wslDistros2 = Get-WslDistros
+
+# 1. Try direct Windows paths first (avoids WSL symlink issues — projects dir is a
+#    symlink to D:\ClaudeCode\Projects\ which UNC paths cannot follow)
+$windowsConfigPaths = @(
+    "D:\ClaudeCode\Projects\claude-voice\scripts\config.json"
+)
+foreach ($winPath in $windowsConfigPaths) {
+    $key = Get-ElevenLabsKeyFromConfig $winPath
+    if ($key) { $script:elevenLabsApiKey = $key; break }
+}
+
+# 2. Try WSL UNC paths (works when projects is NOT a symlink, or for future setups)
+if (-not $script:elevenLabsApiKey) {
     foreach ($distro in $wslDistros2) {
         $cfgPath = "\\wsl.localhost\$distro\home\$($env:USERNAME.ToLower())\projects\claude-voice\scripts\config.json"
-        if (Test-Path $cfgPath) {
-            $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-            # Prefer dedicated usage key (has user_read permission), fall back to main key
-            if ($cfg.elevenlabs_usage_key) {
-                $script:elevenLabsApiKey = $cfg.elevenlabs_usage_key
-                break
-            } elseif ($cfg.elevenlabs_api_key) {
-                $script:elevenLabsApiKey = $cfg.elevenlabs_api_key
-                break
-            }
-        }
+        $key = Get-ElevenLabsKeyFromConfig $cfgPath
+        if ($key) { $script:elevenLabsApiKey = $key; break }
     }
-} catch {}
-# Fallback: check Windows-side secrets
+}
+
+# 3. Fallback: check WSL-side secrets file
 if (-not $script:elevenLabsApiKey) {
     try {
         foreach ($distro in $wslDistros2) {
