@@ -123,7 +123,7 @@ function Get-UsageData {
 $settingsPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "usage-widget-settings.json"
 
 function Load-Settings {
-    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true; RetroLook = $false }
+    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true; RetroLook = $false; HueShift = 0; Skin = "Classic"; ShowElevenLabs = $true }
     if (Test-Path $script:settingsPath) {
         try {
             $saved = Get-Content $script:settingsPath -Raw | ConvertFrom-Json
@@ -135,6 +135,9 @@ function Load-Settings {
             if ($null -ne $saved.BgOpacity) { $defaults.BgOpacity = $saved.BgOpacity }
             if ($null -ne $saved.ShowBorder) { $defaults.ShowBorder = $saved.ShowBorder }
             if ($null -ne $saved.RetroLook) { $defaults.RetroLook = $saved.RetroLook }
+            if ($null -ne $saved.HueShift) { $defaults.HueShift = $saved.HueShift }
+            if ($null -ne $saved.Skin) { $defaults.Skin = $saved.Skin }
+            if ($null -ne $saved.ShowElevenLabs) { $defaults.ShowElevenLabs = $saved.ShowElevenLabs }
         } catch {}
     }
     return $defaults
@@ -150,6 +153,9 @@ function Save-Settings {
         BgOpacity = $script:bgOpacity
         ShowBorder = $script:showBorder
         RetroLook = $script:retroLook
+        HueShift = $script:hueShift
+        Skin = $script:skinName
+        ShowElevenLabs = $script:showElevenLabs
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -264,14 +270,6 @@ $xaml = @"
                 </Grid>
                 <TextBlock x:Name="SevenReset" Text="RESET: --" Foreground="#8830D158"
                            FontSize="22" FontFamily="Consolas" Margin="200 0 0 12"/>
-
-                <!-- ═══ MODEL USAGE DIVIDER ═══ -->
-                <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
-                <TextBlock Text="MODEL BREAKDOWN" Foreground="#AA30D158"
-                           FontSize="20" FontFamily="Consolas" Margin="0 0 0 10"/>
-
-                <!-- ═══ MODEL USAGE ROWS (dynamically populated) ═══ -->
-                <StackPanel x:Name="ModelPanel" Margin="0 0 0 4"/>
 
                 <!-- ═══ SYSTEM METRICS DIVIDER ═══ -->
                 <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
@@ -416,6 +414,35 @@ $xaml = @"
                     </Border>
                 </Grid>
 
+                <!-- ═══ ELEVENLABS USAGE ═══ -->
+                <StackPanel x:Name="ElevenLabsPanel" Margin="0 0 0 0">
+                    <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
+                    <TextBlock Text="ELEVENLABS" Foreground="#AA30D158"
+                               FontSize="20" FontFamily="Consolas" Margin="0 0 0 12"/>
+                    <Grid Margin="0 0 0 4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="CHARS" Foreground="#CC30D158" FontSize="26"
+                                   FontFamily="Consolas" FontWeight="Bold" Width="200"
+                                   VerticalAlignment="Center"/>
+                        <Border Background="#15309958" CornerRadius="1" Height="28"
+                                Margin="8 0 12 0" Grid.Column="1" VerticalAlignment="Center"
+                                BorderBrush="#3330D158" BorderThickness="1">
+                            <Border x:Name="ElevenBar" Background="#30D158" Width="0"
+                                    CornerRadius="0" HorizontalAlignment="Left"/>
+                        </Border>
+                        <TextBlock x:Name="ElevenLabel" Text="--%" Foreground="#30D158"
+                                   FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                                   Grid.Column="2" Width="100" TextAlignment="Right"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                    <TextBlock x:Name="ElevenDetail" Text="RESET: --" Foreground="#8830D158"
+                               FontSize="22" FontFamily="Consolas" Margin="200 0 0 12"/>
+                </StackPanel>
+
                 <!-- Divider -->
                 <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
 
@@ -501,11 +528,14 @@ $statusApi          = $window.FindName("StatusApi")
 $statusApiLabel     = $window.FindName("StatusApiLabel")
 $statusCode         = $window.FindName("StatusCode")
 $statusCodeLabel    = $window.FindName("StatusCodeLabel")
-$modelPanel         = $window.FindName("ModelPanel")
 $diskPanel          = $window.FindName("DiskPanel")
 $outerBorder        = $window.FindName("OuterBorder")
 $scanlineOverlay    = $window.FindName("ScanlineOverlay")
 $contentViewbox     = $window.FindName("ContentViewbox")
+$elevenLabsPanel    = $window.FindName("ElevenLabsPanel")
+$elevenBar          = $window.FindName("ElevenBar")
+$elevenLabel        = $window.FindName("ElevenLabel")
+$elevenDetail       = $window.FindName("ElevenDetail")
 
 $barMaxWidth = 520
 
@@ -513,20 +543,175 @@ $barMaxWidth = 520
 $script:bgOpacity  = $settings.BgOpacity
 $script:showBorder = $settings.ShowBorder
 $script:retroLook  = $settings.RetroLook
+$script:hueShift   = $settings.HueShift
+$script:skinName   = $settings.Skin
+$script:showElevenLabs = $settings.ShowElevenLabs
+
+# ── ElevenLabs API key (read from WSL claude-voice config) ────────────────────
+$script:elevenLabsApiKey = $null
+try {
+    $wslDistros2 = @(wsl.exe -l -q 2>$null | ForEach-Object { $_.Trim() -replace "`0","" } | Where-Object { $_ -ne "" })
+    foreach ($distro in $wslDistros2) {
+        $cfgPath = "\\wsl.localhost\$distro\home\$($env:USERNAME.ToLower())\projects\claude-voice\scripts\config.json"
+        if (Test-Path $cfgPath) {
+            $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+            # Prefer dedicated usage key (has user_read permission), fall back to main key
+            if ($cfg.elevenlabs_usage_key) {
+                $script:elevenLabsApiKey = $cfg.elevenlabs_usage_key
+                break
+            } elseif ($cfg.elevenlabs_api_key) {
+                $script:elevenLabsApiKey = $cfg.elevenlabs_api_key
+                break
+            }
+        }
+    }
+} catch {}
+# Fallback: check Windows-side secrets
+if (-not $script:elevenLabsApiKey) {
+    try {
+        foreach ($distro in $wslDistros2) {
+            $secPath = "\\wsl.localhost\$distro\home\$($env:USERNAME.ToLower())\.secrets\elevenlabs.env"
+            if (Test-Path $secPath) {
+                $content = Get-Content $secPath -Raw
+                if ($content -match 'ELEVENLABS_API_KEY=(.+)') {
+                    $script:elevenLabsApiKey = $matches[1].Trim()
+                    break
+                }
+            }
+        }
+    } catch {}
+}
+
+# ── Hue shift helpers ─────────────────────────────────────────────────────────
+# Convert RGB (0-255) to HSL, shift hue, convert back. Returns hex string like "#AARRGGBB" or "#RRGGBB".
+function Shift-HexColor([string]$hex, [int]$hueDeg) {
+    if ($hueDeg -eq 0) { return $hex }
+    # Parse hex: supports #RGB, #RRGGBB, #AARRGGBB
+    $h = $hex.TrimStart('#')
+    $a = 255; $r = 0; $g = 0; $b = 0
+    if ($h.Length -eq 8) {
+        $a = [Convert]::ToInt32($h.Substring(0,2), 16)
+        $r = [Convert]::ToInt32($h.Substring(2,2), 16)
+        $g = [Convert]::ToInt32($h.Substring(4,2), 16)
+        $b = [Convert]::ToInt32($h.Substring(6,2), 16)
+    } elseif ($h.Length -eq 6) {
+        $r = [Convert]::ToInt32($h.Substring(0,2), 16)
+        $g = [Convert]::ToInt32($h.Substring(2,2), 16)
+        $b = [Convert]::ToInt32($h.Substring(4,2), 16)
+    } else { return $hex }
+
+    # RGB to HSL
+    $rf = $r / 255.0; $gf = $g / 255.0; $bf = $b / 255.0
+    $max = [math]::Max($rf, [math]::Max($gf, $bf))
+    $min = [math]::Min($rf, [math]::Min($gf, $bf))
+    $l = ($max + $min) / 2.0
+    $hue = 0.0; $sat = 0.0
+    if ($max -ne $min) {
+        $d = $max - $min
+        $sat = if ($l -gt 0.5) { $d / (2.0 - $max - $min) } else { $d / ($max + $min) }
+        if ($max -eq $rf) { $hue = (($gf - $bf) / $d) + $(if ($gf -lt $bf) { 6 } else { 0 }) }
+        elseif ($max -eq $gf) { $hue = (($bf - $rf) / $d) + 2 }
+        else { $hue = (($rf - $gf) / $d) + 4 }
+        $hue = $hue / 6.0
+    }
+
+    # Shift hue
+    $hue = ($hue + $hueDeg / 360.0) % 1.0
+    if ($hue -lt 0) { $hue += 1.0 }
+
+    # HSL to RGB
+    if ($sat -eq 0) { $rf = $gf = $bf = $l }
+    else {
+        $q = if ($l -lt 0.5) { $l * (1.0 + $sat) } else { $l + $sat - $l * $sat }
+        $p = 2.0 * $l - $q
+        $rf = [math]::Max(0, [math]::Min(1, (Hue2Rgb $p $q ($hue + 1.0/3.0))))
+        $gf = [math]::Max(0, [math]::Min(1, (Hue2Rgb $p $q $hue)))
+        $bf = [math]::Max(0, [math]::Min(1, (Hue2Rgb $p $q ($hue - 1.0/3.0))))
+    }
+
+    $rn = [math]::Round($rf * 255); $gn = [math]::Round($gf * 255); $bn = [math]::Round($bf * 255)
+    if ($h.Length -eq 8) {
+        return "#{0:X2}{1:X2}{2:X2}{3:X2}" -f [int]$a, [int]$rn, [int]$gn, [int]$bn
+    }
+    return "#{0:X2}{1:X2}{2:X2}" -f [int]$rn, [int]$gn, [int]$bn
+}
+
+function Hue2Rgb([double]$p, [double]$q, [double]$t) {
+    if ($t -lt 0) { $t += 1.0 }
+    if ($t -gt 1) { $t -= 1.0 }
+    if ($t -lt 1.0/6.0) { return $p + ($q - $p) * 6.0 * $t }
+    if ($t -lt 0.5) { return $q }
+    if ($t -lt 2.0/3.0) { return $p + ($q - $p) * (2.0/3.0 - $t) * 6.0 }
+    return $p
+}
+
+# ── Skin color system ─────────────────────────────────────────────────────────
+# Returns the skin-appropriate color by mapping Classic green hex codes to Shadowbroker cyan equivalents.
+# For Classic skin: returns the original hex unchanged.
+# For Shadowbroker: remaps green-family (#30D158, #309958) to cyan-family (#00BCD4, #00838F).
+function Get-SkinBaseColor([string]$hex) {
+    if ($script:skinName -ne "Shadowbroker") { return $hex }
+    # Map Classic green variants to Shadowbroker cyan equivalents (preserving alpha prefixes)
+    $h = $hex.TrimStart('#')
+    # Extract alpha prefix if 8-char hex (AARRGGBB)
+    $alpha = ""; $color = $h
+    if ($h.Length -eq 8) { $alpha = $h.Substring(0,2); $color = $h.Substring(2) }
+    $mapped = switch ($color.ToUpper()) {
+        "30D158" { "00BCD4" }   # primary green → primary cyan
+        "309958" { "00838F" }   # dark green → dark cyan
+        default  { $null }
+    }
+    if ($mapped) { return "#${alpha}${mapped}" }
+    return $hex
+}
+
+# Shorthand: apply skin mapping THEN hue shift
+function Get-HueColor([string]$baseHex) { return Shift-HexColor (Get-SkinBaseColor $baseHex) $script:hueShift }
+
+# Get skin-specific background color (for widget body)
+function Get-SkinBgHex { if ($script:skinName -eq "Shadowbroker") { return "000000" } else { return "080C10" } }
+
+# Get skin-specific bar track background
+function Get-SkinTrackBg { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#15008B8F" } else { "#15309958" }) }
+
+# Get skin-specific bar track border
+function Get-SkinTrackBorder { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#33009BA3" } else { "#3330D158" }) }
+
+# Get skin-specific section bg for outage cards etc
+function Get-SkinCardBg { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#10008B8F" } else { "#10309958" }) }
 
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
-    # Background: #080C10 with variable alpha (0-100% → 0x00-0xFF)
+    # Background: skin-dependent base color with variable alpha (0-100% → 0x00-0xFF)
     $alpha = [math]::Round($script:bgOpacity * 255 / 100)
     $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
-    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}080C10")
+    $bgBase = Get-SkinBgHex
+    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
     # Border
     if ($script:showBorder) {
-        $outerBorder.BorderBrush = $bc.ConvertFrom("#8830D158")
+        $outerBorder.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
         $outerBorder.BorderThickness = [System.Windows.Thickness]::new(1.5)
     } else {
         $outerBorder.BorderBrush = $bc.ConvertFrom("#00000000")
         $outerBorder.BorderThickness = [System.Windows.Thickness]::new(0)
+    }
+    # Shadowbroker: cyan glow on outer border
+    if ($script:skinName -eq "Shadowbroker") {
+        $borderGlow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $borderGlow.ShadowDepth = 0
+        $borderGlow.BlurRadius = 15
+        $glowC = $bc.ConvertFrom((Get-HueColor "#00BCD4"))
+        $borderGlow.Color = $glowC.Color
+        $borderGlow.Opacity = 0.15
+        $outerBorder.Effect = $borderGlow
+    } else {
+        # Classic: subtle dark shadow (original)
+        $classicShadow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $classicShadow.BlurRadius = 20
+        $classicShadow.Opacity = 0.5
+        $classicShadow.ShadowDepth = 2
+        $classicShadow.Color = [System.Windows.Media.Color]::FromRgb(10, 26, 10)
+        $outerBorder.Effect = $classicShadow
     }
     # Retro Look — phosphor glow + visible CRT scanlines
     if ($script:retroLook) {
@@ -547,17 +732,96 @@ function Apply-Appearance {
         $grad.GradientStops.Add([System.Windows.Media.GradientStop]::new(
             [System.Windows.Media.Color]::FromArgb(50, 0, 0, 0), 1.0))
         $scanlineOverlay.Background = $grad
-        # Phosphor glow
+        # Phosphor glow — skin + hue-shifted
+        $glowHex = Get-HueColor "#30D158"
+        $glowParsed = $bc.ConvertFrom($glowHex)
         $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
         $glow.ShadowDepth = 0
         $glow.BlurRadius = 8
-        $glow.Color = [System.Windows.Media.Color]::FromRgb(0x30, 0xD1, 0x58)
+        $glow.Color = $glowParsed.Color
         $glow.Opacity = 0.45
         $contentViewbox.Effect = $glow
     } else {
         # Restore subtle default scanlines
         $scanlineOverlay.Opacity = 0.03
         $contentViewbox.Effect = $null
+    }
+
+    # ── Hue-shift all static green UI elements ──
+    # Walk the visual tree once to capture original colors, then shift from originals.
+    Apply-HueToTree $window
+
+    # ── Update context menu colors to match skin ──
+    $accentColor = Get-HueColor "#30D158"
+    try {
+        if ($ctxMenu) {
+            $ctxMenu.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
+            $ctxMenu.Foreground = $bc.ConvertFrom($accentColor)
+            if ($script:skinName -eq "Shadowbroker") {
+                $ctxMenu.Background = $bc.ConvertFrom("#F0000000")
+            } else {
+                $ctxMenu.Background = $bc.ConvertFrom("#F0080C10")
+            }
+        }
+    } catch {}
+    # Update slider value label colors
+    try {
+        if ($script:opacityValueLabel) { $script:opacityValueLabel.Foreground = $bc.ConvertFrom($accentColor) }
+        if ($script:hueValueLabel) { $script:hueValueLabel.Foreground = $bc.ConvertFrom($accentColor) }
+    } catch {}
+}
+
+# Global dictionary: maps element hash + property → XAML original hex color (captured on first run, never changes)
+if (-not $script:origColors) { $script:origColors = @{} }
+
+function Apply-HueToTree($element) {
+    $bc = [System.Windows.Media.BrushConverter]::new()
+    try {
+        $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($element)
+    } catch { return }
+
+    for ($i = 0; $i -lt $count; $i++) {
+        $child = [System.Windows.Media.VisualTreeHelper]::GetChild($element, $i)
+        $id = $child.GetHashCode()
+
+        # TextBlock: shift Foreground
+        if ($child -is [System.Windows.Controls.TextBlock]) {
+            $key = "${id}_Foreground"
+            if (-not $script:origColors.ContainsKey($key)) {
+                $fg = $child.Foreground
+                if ($fg -is [System.Windows.Media.SolidColorBrush]) {
+                    $script:origColors[$key] = $fg.ToString()
+                }
+            }
+            if ($script:origColors.ContainsKey($key)) {
+                $orig = $script:origColors[$key]
+                # Match original XAML greens — Get-HueColor will remap to skin color + hue shift
+                if ($orig -imatch "30D158|309958") {
+                    $child.Foreground = $bc.ConvertFrom((Get-HueColor $orig))
+                }
+            }
+        }
+
+        # Border: shift Background and BorderBrush
+        if ($child -is [System.Windows.Controls.Border]) {
+            foreach ($prop in @("Background", "BorderBrush")) {
+                $key = "${id}_${prop}"
+                if (-not $script:origColors.ContainsKey($key)) {
+                    $brush = $child.$prop
+                    if ($brush -is [System.Windows.Media.SolidColorBrush]) {
+                        $script:origColors[$key] = $brush.ToString()
+                    }
+                }
+                if ($script:origColors.ContainsKey($key)) {
+                    $orig = $script:origColors[$key]
+                    if ($orig -imatch "30D158|309958") {
+                        $child.$prop = $bc.ConvertFrom((Get-HueColor $orig))
+                    }
+                }
+            }
+        }
+
+        Apply-HueToTree $child
     }
 }
 
@@ -568,25 +832,15 @@ $script:lastGoodUsage = $null
 $script:alertPlayer = New-Object System.Windows.Media.MediaPlayer
 
 function Get-WYColor($pct) {
-    if ($pct -lt 50)  { return @{ bar = "#30D158"; text = "#30D158" } }  # green
-    elseif ($pct -lt 80) { return @{ bar = "#D1A830"; text = "#D1A830" } }  # amber
-    else { return @{ bar = "#D14030"; text = "#D14030" } }  # red
-}
-
-function Get-SysColor($pct) {
-    # Green-family gradient for system metrics — matches widget design language
-    if ($pct -lt 30)     { return @{ bar = "#1A3A22"; text = "#3A6A42" } }  # very dim green
-    elseif ($pct -lt 50) { return @{ bar = "#1E5A2E"; text = "#4A8A52" } }  # muted green
-    elseif ($pct -lt 70) { return @{ bar = "#238A38"; text = "#30B148" } }  # medium green
-    elseif ($pct -lt 80) { return @{ bar = "#30D158"; text = "#30D158" } }  # full widget green
-    elseif ($pct -lt 90) { return @{ bar = "#D18030"; text = "#D18030" } }  # warm amber
-    else                 { return @{ bar = "#D14030"; text = "#D14030" } }  # red
+    if ($pct -lt 50)  { $c = Get-HueColor "#30D158"; return @{ bar = $c; text = $c } }  # green/cyan (skin + hue-shifted)
+    elseif ($pct -lt 80) { return @{ bar = "#D1A830"; text = "#D1A830" } }  # amber (fixed)
+    else { return @{ bar = "#D14030"; text = "#D14030" } }  # red (fixed)
 }
 
 function Get-TempColor($temp) {
-    if ($null -eq $temp -or $temp -eq "N/A") { return "#883A6A42" }
-    if ($temp -lt 60) { return "#4A8A52" }
-    elseif ($temp -le 80) { return "#30D158" }
+    if ($null -eq $temp -or $temp -eq "N/A") { return Get-HueColor "#8830D158" }
+    if ($temp -lt 60) { return Get-HueColor "#30D158" }
+    elseif ($temp -le 80) { return "#D1A830" }
     else { return "#D14030" }
 }
 
@@ -717,11 +971,11 @@ function Get-OutageStatus {
 
 function Get-OutageColor($status) {
     switch ($status) {
-        "operational"           { return "#30D158" }
+        "operational"           { return Get-HueColor "#30D158" }
         "degraded_performance"  { return "#D1A830" }
         "partial_outage"        { return "#D14030" }
         "major_outage"          { return "#D14030" }
-        default                 { return "#5530D158" }
+        default                 { return Get-HueColor "#5530D158" }
     }
 }
 
@@ -730,7 +984,7 @@ function Update-SysMetrics($precomputed) {
     $sys = if ($precomputed) { $precomputed } else { Get-SystemMetrics }
 
     # CPU
-    $cc = Get-SysColor $sys.cpuPct
+    $cc = Get-WYColor $sys.cpuPct
     $cpuBar.Background   = $bc.ConvertFrom($cc.bar)
     $cpuBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.cpuPct, 100) / 100))
     $cpuLabel.Text       = "$($sys.cpuPct)%"
@@ -740,7 +994,7 @@ function Update-SysMetrics($precomputed) {
     $cpuDetail.Foreground = $bc.ConvertFrom((Get-TempColor $sys.cpuTemp))
 
     # RAM
-    $rc = Get-SysColor $sys.ramPct
+    $rc = Get-WYColor $sys.ramPct
     $ramBar.Background   = $bc.ConvertFrom($rc.bar)
     $ramBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.ramPct, 100) / 100))
     $ramLabel.Text       = "$($sys.ramPct)%"
@@ -749,7 +1003,7 @@ function Update-SysMetrics($precomputed) {
     $ramDetail.Foreground = $bc.ConvertFrom($rc.text)
 
     # GPU
-    $gc = Get-SysColor $sys.gpuPct
+    $gc = Get-WYColor $sys.gpuPct
     $gpuBar.Background   = $bc.ConvertFrom($gc.bar)
     $gpuBar.Width        = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($sys.gpuPct, 100) / 100))
     $gpuLabel.Text       = "$($sys.gpuPct)%"
@@ -761,7 +1015,7 @@ function Update-SysMetrics($precomputed) {
     # Disks (dynamic — one bar per fixed drive)
     $diskPanel.Children.Clear()
     foreach ($disk in $sys.disks) {
-        $dc = Get-SysColor $disk.pct
+        $dc = Get-WYColor $disk.pct
 
         # Bar row: 3-column Grid (label | bar track | percentage)
         $grid = New-Object System.Windows.Controls.Grid
@@ -776,7 +1030,7 @@ function Update-SysMetrics($precomputed) {
         # Drive letter label
         $lbl = New-Object System.Windows.Controls.TextBlock
         $lbl.Text = "$($disk.letter):"
-        $lbl.Foreground = $bc.ConvertFrom("#CC30D158")
+        $lbl.Foreground = $bc.ConvertFrom((Get-HueColor "#CC30D158"))
         $lbl.FontSize = 26; $lbl.FontFamily = "Consolas"; $lbl.FontWeight = "Bold"
         $lbl.Width = 200; $lbl.VerticalAlignment = "Center"
         [System.Windows.Controls.Grid]::SetColumn($lbl, 0)
@@ -784,12 +1038,12 @@ function Update-SysMetrics($precomputed) {
 
         # Bar track + fill
         $track = New-Object System.Windows.Controls.Border
-        $track.Background = $bc.ConvertFrom("#15309958")
+        $track.Background = $bc.ConvertFrom((Get-SkinTrackBg))
         $track.CornerRadius = [System.Windows.CornerRadius]::new(1)
         $track.Height = 28
         $track.Margin = [System.Windows.Thickness]::new(8,0,12,0)
         $track.VerticalAlignment = "Center"
-        $track.BorderBrush = $bc.ConvertFrom("#3330D158")
+        $track.BorderBrush = $bc.ConvertFrom((Get-SkinTrackBorder))
         $track.BorderThickness = [System.Windows.Thickness]::new(1)
         [System.Windows.Controls.Grid]::SetColumn($track, 1)
         $bar = New-Object System.Windows.Controls.Border
@@ -821,119 +1075,31 @@ function Update-SysMetrics($precomputed) {
     }
 }
 
-# ── Model Usage ──────────────────────────────────────────────────────────────
-$modelUsagePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "model-usage.json"
-
-function Get-ModelColor($modelName) {
-    switch ($modelName) {
-        "opus"   { return @{ primary = "#30D158"; dim = "#AA30D158"; bg = "#15309958" } }
-        "sonnet" { return @{ primary = "#58A8D1"; dim = "#AA58A8D1"; bg = "#15589958" } }
-        "haiku"  { return @{ primary = "#D1A830"; dim = "#AAD1A830"; bg = "#15D19958" } }
-        default  { return @{ primary = "#8899AA"; dim = "#AA8899AA"; bg = "#15889958" } }
-    }
-}
-
-function Update-ModelUsage {
+function Update-ElevenLabs($preData) {
     $bc = [System.Windows.Media.BrushConverter]::new()
-    $modelPanel.Children.Clear()
+    # Toggle visibility
+    if (-not $script:showElevenLabs -or -not $script:elevenLabsApiKey) {
+        $elevenLabsPanel.Visibility = "Collapsed"
+        return
+    }
+    $elevenLabsPanel.Visibility = "Visible"
 
-    if (-not (Test-Path $script:modelUsagePath)) {
-        $noData = New-Object System.Windows.Controls.TextBlock
-        $noData.Text = "AWAITING DATA..."
-        $noData.Foreground = $bc.ConvertFrom("#5530D158")
-        $noData.FontSize = 20; $noData.FontFamily = "Consolas"
-        $noData.Margin = [System.Windows.Thickness]::new(0,0,0,8)
-        $modelPanel.Children.Add($noData) | Out-Null
+    $data = $preData
+    if (-not $data) { return }
+    if ($data.error) {
+        $elevenLabel.Text = "ERR"
+        $elevenDetail.Text = $data.error
         return
     }
 
-    try {
-        $json = Get-Content $script:modelUsagePath -Raw | ConvertFrom-Json
-    } catch { return }
-
-    $models = $json.models
-    if (-not $models) { return }
-
-    foreach ($prop in $models.PSObject.Properties) {
-        $name = $prop.Name
-        $data = $prop.Value
-        $mc = Get-ModelColor $name
-
-        # Model row: NAME   5h: XXXK   today: XXXK   7d: XXXK   (N calls)
-        $row = New-Object System.Windows.Controls.Grid
-        $row.Margin = [System.Windows.Thickness]::new(0,0,0,2)
-        $c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = "120"
-        $c2 = New-Object System.Windows.Controls.ColumnDefinition; $c2.Width = "*"
-        $c3 = New-Object System.Windows.Controls.ColumnDefinition; $c3.Width = "*"
-        $c4 = New-Object System.Windows.Controls.ColumnDefinition; $c4.Width = "*"
-        $c5 = New-Object System.Windows.Controls.ColumnDefinition; $c5.Width = "Auto"
-        $row.ColumnDefinitions.Add($c1)
-        $row.ColumnDefinitions.Add($c2)
-        $row.ColumnDefinitions.Add($c3)
-        $row.ColumnDefinitions.Add($c4)
-        $row.ColumnDefinitions.Add($c5)
-
-        # Model name
-        $lbl = New-Object System.Windows.Controls.TextBlock
-        $lbl.Text = $name.ToUpper()
-        $lbl.Foreground = $bc.ConvertFrom($mc.primary)
-        $lbl.FontSize = 22; $lbl.FontFamily = "Consolas"; $lbl.FontWeight = "Bold"
-        $lbl.VerticalAlignment = "Center"
-        [System.Windows.Controls.Grid]::SetColumn($lbl, 0)
-        $row.Children.Add($lbl) | Out-Null
-
-        # 5h tokens
-        $t5h = New-Object System.Windows.Controls.TextBlock
-        $t5h.Text = "5H: $($data.'5h'.display)"
-        $t5h.Foreground = $bc.ConvertFrom($mc.dim)
-        $t5h.FontSize = 20; $t5h.FontFamily = "Consolas"
-        $t5h.VerticalAlignment = "Center"
-        [System.Windows.Controls.Grid]::SetColumn($t5h, 1)
-        $row.Children.Add($t5h) | Out-Null
-
-        # Today tokens
-        $tToday = New-Object System.Windows.Controls.TextBlock
-        $tToday.Text = "24H: $($data.today.display)"
-        $tToday.Foreground = $bc.ConvertFrom($mc.dim)
-        $tToday.FontSize = 20; $tToday.FontFamily = "Consolas"
-        $tToday.VerticalAlignment = "Center"
-        [System.Windows.Controls.Grid]::SetColumn($tToday, 2)
-        $row.Children.Add($tToday) | Out-Null
-
-        # 7d tokens
-        $t7d = New-Object System.Windows.Controls.TextBlock
-        $t7d.Text = "7D: $($data.'7d'.display)"
-        $t7d.Foreground = $bc.ConvertFrom($mc.dim)
-        $t7d.FontSize = 20; $t7d.FontFamily = "Consolas"
-        $t7d.VerticalAlignment = "Center"
-        [System.Windows.Controls.Grid]::SetColumn($t7d, 3)
-        $row.Children.Add($t7d) | Out-Null
-
-        # Call count
-        $calls = New-Object System.Windows.Controls.TextBlock
-        $calls.Text = "$($data.today.calls)x"
-        $calls.Foreground = $bc.ConvertFrom("#5530D158")
-        $calls.FontSize = 18; $calls.FontFamily = "Consolas"
-        $calls.VerticalAlignment = "Center"; $calls.Margin = [System.Windows.Thickness]::new(8,0,0,0)
-        [System.Windows.Controls.Grid]::SetColumn($calls, 4)
-        $row.Children.Add($calls) | Out-Null
-
-        $modelPanel.Children.Add($row) | Out-Null
-    }
-
-    # Staleness indicator
-    try {
-        $genTime = [DateTimeOffset]::Parse($json.generated_at).LocalDateTime
-        $age = [DateTime]::Now - $genTime
-        if ($age.TotalMinutes -gt 10) {
-            $stale = New-Object System.Windows.Controls.TextBlock
-            $stale.Text = "DATA: $([math]::Round($age.TotalMinutes))MIN OLD"
-            $stale.Foreground = $bc.ConvertFrom("#AAD1A830")
-            $stale.FontSize = 18; $stale.FontFamily = "Consolas"
-            $stale.Margin = [System.Windows.Thickness]::new(0,2,0,0)
-            $modelPanel.Children.Add($stale) | Out-Null
-        }
-    } catch {}
+    $pct = $data.pct
+    $ec = Get-WYColor $pct
+    $elevenBar.Background = $bc.ConvertFrom($ec.bar)
+    $elevenBar.Width = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($pct, 100) / 100))
+    $elevenLabel.Text = "$($pct)%"
+    $elevenLabel.Foreground = $bc.ConvertFrom($ec.text)
+    $elevenDetail.Text = "$($data.used)/$($data.limit) CHARS | RESET: $($data.reset)"
+    $elevenDetail.Foreground = $bc.ConvertFrom((Get-HueColor "#8830D158"))
 }
 
 function Update-Widget($preUsage, $preOutage) {
@@ -968,9 +1134,9 @@ function Update-Widget($preUsage, $preOutage) {
         $displayData = $data
         $script:lastGoodUsage = $data
         $errorLabel.Visibility = "Collapsed"
-        $statusDot.Background  = $bc.ConvertFrom("#30D158")
+        $statusDot.Background  = $bc.ConvertFrom((Get-HueColor "#30D158"))
         $statusText.Text = "LINK ACTIVE"
-        $statusText.Foreground = $bc.ConvertFrom("#AA30D158")
+        $statusText.Foreground = $bc.ConvertFrom((Get-HueColor "#AA30D158"))
     }
 
     if ($displayData) {
@@ -1071,7 +1237,7 @@ $lockMenuItem.Add_Click({
 $restartMenuItem = New-Object System.Windows.Controls.MenuItem
 $restartMenuItem.Header = "REFRESH"
 $restartMenuItem.Style = $ctxItemStyleObj
-$restartMenuItem.Add_Click({ Update-SysMetrics; Update-ModelUsage; Update-Widget })
+$restartMenuItem.Add_Click({ Update-SysMetrics; Update-Widget })
 
 $relinkMenuItem = New-Object System.Windows.Controls.MenuItem
 $relinkMenuItem.Header = "RELINK"
@@ -1083,8 +1249,7 @@ $relinkMenuItem.Add_Click({
     $statusDot.Background  = $bc.ConvertFrom("#D1A830")
     # Force sync from WSL and trigger immediate background fetch
     Sync-WslCreds
-    $script:usageBackoff = 0
-    $script:usageTicks = [math]::Max($script:usageInterval - 10, 0)
+    $script:usageTicks = 60
 })
 
 $restartWidgetMenuItem = New-Object System.Windows.Controls.MenuItem
@@ -1120,7 +1285,7 @@ $opacitySlider.IsSnapToTickEnabled = $true
 $opacitySlider.TickFrequency = 1
 $script:opacityValueLabel = New-Object System.Windows.Controls.TextBlock
 $script:opacityValueLabel.Text = "$($script:bgOpacity)%"
-$script:opacityValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#30D158")
+$script:opacityValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
 $script:opacityValueLabel.FontFamily = "Consolas"
 $script:opacityValueLabel.FontSize = 12
 $script:opacityValueLabel.Width = 36
@@ -1139,6 +1304,45 @@ $opacitySubItem = New-Object System.Windows.Controls.MenuItem
 $opacitySubItem.Header = $opacityPanel
 $opacitySubItem.StaysOpenOnClick = $true
 $opacityMenuItem.Items.Add($opacitySubItem) | Out-Null
+
+# Hue slider menu item
+$hueMenuItem = New-Object System.Windows.Controls.MenuItem
+$hueMenuItem.Style = $ctxItemStyleObj
+$hueMenuItem.Header = "HUE"
+$hueMenuItem.StaysOpenOnClick = $true
+$huePanel = New-Object System.Windows.Controls.StackPanel
+$huePanel.Orientation = "Horizontal"
+$huePanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$hueSlider = New-Object System.Windows.Controls.Slider
+$hueSlider.Minimum = 0
+$hueSlider.Maximum = 360
+$hueSlider.Value = $script:hueShift
+$hueSlider.Width = 140
+$hueSlider.VerticalAlignment = "Center"
+$hueSlider.IsSnapToTickEnabled = $true
+$hueSlider.TickFrequency = 1
+$script:hueValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:hueValueLabel.Text = "$($script:hueShift)°"
+$script:hueValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:hueValueLabel.FontFamily = "Consolas"
+$script:hueValueLabel.FontSize = 12
+$script:hueValueLabel.Width = 36
+$script:hueValueLabel.TextAlignment = "Right"
+$script:hueValueLabel.VerticalAlignment = "Center"
+$script:hueValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$hueSlider.Add_ValueChanged({
+    $script:hueShift = [math]::Round($hueSlider.Value)
+    $script:hueValueLabel.Text = "$($script:hueShift)$([char]176)"
+    $script:hueValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+    Apply-Appearance
+    Save-Settings
+})
+$huePanel.Children.Add($hueSlider) | Out-Null
+$huePanel.Children.Add($script:hueValueLabel) | Out-Null
+$hueSubItem = New-Object System.Windows.Controls.MenuItem
+$hueSubItem.Header = $huePanel
+$hueSubItem.StaysOpenOnClick = $true
+$hueMenuItem.Items.Add($hueSubItem) | Out-Null
 
 # Border toggle menu item
 $borderMenuItem = New-Object System.Windows.Controls.MenuItem
@@ -1162,13 +1366,71 @@ $retroMenuItem.Add_Click({
     Save-Settings
 })
 
+# Skin submenu
+$skinMenuItem = New-Object System.Windows.Controls.MenuItem
+$skinMenuItem.Style = $ctxItemStyleObj
+$skinMenuItem.Header = "SKIN"
+$skinMenuItem.StaysOpenOnClick = $true
+
+$skinClassicItem = New-Object System.Windows.Controls.MenuItem
+$skinClassicItem.Style = $ctxItemStyleObj
+$skinClassicItem.Header = if ($script:skinName -eq "Classic") { "* CLASSIC" } else { "  CLASSIC" }
+$skinClassicItem.Add_Click({
+    $script:skinName = "Classic"
+    $skinClassicItem.Header = "* CLASSIC"
+    $skinShadowbrokerItem.Header = "  SHADOWBROKER"
+    Apply-Appearance
+    # Force refresh system metrics + usage to re-apply bar colors
+    Update-SysMetrics
+    Update-Widget
+    Save-Settings
+})
+
+$skinShadowbrokerItem = New-Object System.Windows.Controls.MenuItem
+$skinShadowbrokerItem.Style = $ctxItemStyleObj
+$skinShadowbrokerItem.Header = if ($script:skinName -eq "Shadowbroker") { "* SHADOWBROKER" } else { "  SHADOWBROKER" }
+$skinShadowbrokerItem.Add_Click({
+    $script:skinName = "Shadowbroker"
+    $skinShadowbrokerItem.Header = "* SHADOWBROKER"
+    $skinClassicItem.Header = "  CLASSIC"
+    Apply-Appearance
+    # Force refresh system metrics + usage to re-apply bar colors
+    Update-SysMetrics
+    Update-Widget
+    Save-Settings
+})
+
+$skinMenuItem.Items.Add($skinClassicItem) | Out-Null
+$skinMenuItem.Items.Add($skinShadowbrokerItem) | Out-Null
+
+# ElevenLabs toggle menu item
+$elevenLabsMenuItem = New-Object System.Windows.Controls.MenuItem
+$elevenLabsMenuItem.Header = if ($script:showElevenLabs) { "ELEVENLABS: ON" } else { "ELEVENLABS: OFF" }
+$elevenLabsMenuItem.Style = $ctxItemStyleObj
+$elevenLabsMenuItem.Add_Click({
+    $script:showElevenLabs = -not $script:showElevenLabs
+    $elevenLabsMenuItem.Header = if ($script:showElevenLabs) { "ELEVENLABS: ON" } else { "ELEVENLABS: OFF" }
+    if ($script:showElevenLabs -and $script:lastElevenData) {
+        Update-ElevenLabs $script:lastElevenData
+    } elseif ($script:showElevenLabs) {
+        # Trigger immediate fetch
+        $script:elevenTicks = 300
+    } else {
+        $elevenLabsPanel.Visibility = "Collapsed"
+    }
+    Save-Settings
+})
+
 $ctxMenu.Items.Add($lockMenuItem) | Out-Null
 $ctxMenu.Items.Add($restartMenuItem) | Out-Null
 $ctxMenu.Items.Add($relinkMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
+$ctxMenu.Items.Add($skinMenuItem) | Out-Null
 $ctxMenu.Items.Add($opacityMenuItem) | Out-Null
+$ctxMenu.Items.Add($hueMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add($retroMenuItem) | Out-Null
+$ctxMenu.Items.Add($elevenLabsMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($restartWidgetMenuItem) | Out-Null
 $ctxMenu.Items.Add($closeMenuItem) | Out-Null
@@ -1187,8 +1449,13 @@ $window.Add_Loaded({
     Apply-LockState
     Apply-Appearance
     Update-SysMetrics
-    Update-ModelUsage
     Update-Widget
+    # Set initial ElevenLabs visibility and trigger first fetch
+    if (-not $script:showElevenLabs -or -not $script:elevenLabsApiKey) {
+        $elevenLabsPanel.Visibility = "Collapsed"
+    } else {
+        $script:elevenTicks = 300  # trigger immediate fetch on next tick
+    }
 })
 
 # ── Background runspace pool (keeps UI thread free) ──────────────────────────
@@ -1351,20 +1618,48 @@ try {
 return @{ usage = $usageData; outage = $outageData }
 '@
 
+# Self-contained script for ElevenLabs usage (runs in background runspace)
+$script:elevenLabsScript = @'
+param($apiKey)
+if (-not $apiKey) { return @{ error = "NO API KEY" } }
+try {
+    $headers = @{ "xi-api-key" = $apiKey; "Accept" = "application/json" }
+    $resp = Invoke-RestMethod -Uri "https://api.elevenlabs.io/v1/user/subscription" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
+    $used = $resp.character_count
+    $limit = $resp.character_limit
+    $pct = if ($limit -gt 0) { [math]::Round(($used / $limit) * 100, 1) } else { 0 }
+    $resetStr = "--"
+    if ($resp.next_character_count_reset_unix) {
+        $resetTime = [DateTimeOffset]::FromUnixTimeSeconds($resp.next_character_count_reset_unix).LocalDateTime
+        $diff = $resetTime - [DateTime]::Now
+        $resetStr = if ($diff.TotalSeconds -le 0) { "NOW" }
+                    elseif ($diff.TotalMinutes -lt 60) { "$([math]::Round($diff.TotalMinutes))M" }
+                    elseif ($diff.TotalHours -lt 24) { "$([math]::Round($diff.TotalHours, 1))H" }
+                    else { "$([math]::Round($diff.TotalDays, 1))D" }
+    }
+    return @{ error = $null; pct = $pct; used = $used; limit = $limit; reset = $resetStr }
+} catch {
+    $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+    return @{ error = "HTTP $sc" }
+}
+'@
+
 # Background job tracking
 $script:sysJob = $null
 $script:usageJob = $null
+$script:elevenJob = $null
 $script:sysTicks = 0
 $script:usageTicks = 0
-$script:usageInterval = 300          # Base: 5 min (safe for 2 machines)
-$script:usageBackoff = 0             # Extra seconds added on 429
+$script:elevenTicks = 0
+$script:lastElevenData = $null
 
 # Save settings on close + cleanup runspaces
 $window.Add_Closing({
     Save-Settings
     $pollTimer.Stop()
-    if ($script:sysJob)   { try { $script:sysJob.PS.Stop(); $script:sysJob.PS.Dispose() } catch {} }
-    if ($script:usageJob) { try { $script:usageJob.PS.Stop(); $script:usageJob.PS.Dispose() } catch {} }
+    if ($script:sysJob)    { try { $script:sysJob.PS.Stop(); $script:sysJob.PS.Dispose() } catch {} }
+    if ($script:usageJob)  { try { $script:usageJob.PS.Stop(); $script:usageJob.PS.Dispose() } catch {} }
+    if ($script:elevenJob) { try { $script:elevenJob.PS.Stop(); $script:elevenJob.PS.Dispose() } catch {} }
     $runspacePool.Close()
 })
 
@@ -1381,6 +1676,7 @@ $pollTimer.Interval = [TimeSpan]::FromSeconds(1)
 $pollTimer.Add_Tick({
     $script:sysTicks++
     $script:usageTicks++
+    $script:elevenTicks++
 
     # Check sys metrics job completion
     if ($script:sysJob -and $script:sysJob.Handle.IsCompleted) {
@@ -1399,13 +1695,6 @@ $pollTimer.Add_Tick({
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
                 Update-Widget $result[0].usage $result[0].outage
-                Update-ModelUsage
-                # Exponential backoff on rate limit; reset on success
-                if ($result[0].usage.error -eq "RATE LIMITED") {
-                    $script:usageBackoff = if ($script:usageBackoff -lt 60) { 300 } else { [math]::Min($script:usageBackoff * 2, 1800) }
-                } else {
-                    $script:usageBackoff = 0
-                }
             }
         } catch {} finally {
             $script:usageJob.PS.Dispose()
@@ -1422,11 +1711,35 @@ $pollTimer.Add_Tick({
         $script:sysJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 
-    # Start usage+outage job every 300s / 5min (safe for 2 machines polling same API)
+    # Check ElevenLabs job completion
+    if ($script:elevenJob -and $script:elevenJob.Handle.IsCompleted) {
+        try {
+            $result = $script:elevenJob.PS.EndInvoke($script:elevenJob.Handle)
+            if ($result -and $result.Count -gt 0) {
+                $script:lastElevenData = $result[0]
+                Update-ElevenLabs $result[0]
+            }
+        } catch {} finally {
+            $script:elevenJob.PS.Dispose()
+            $script:elevenJob = $null
+        }
+    }
+
+    # Start ElevenLabs job every 300s / 5min (if enabled and not already running)
+    if ($script:showElevenLabs -and $script:elevenLabsApiKey -and $script:elevenTicks -ge 300 -and -not $script:elevenJob) {
+        $script:elevenTicks = 0
+        $ps = [PowerShell]::Create()
+        $ps.RunspacePool = $runspacePool
+        $ps.AddScript($script:elevenLabsScript).AddArgument($script:elevenLabsApiKey) | Out-Null
+        $script:elevenJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
+    }
+
+    # Start usage+outage job every 180s / 3min (if not already running)
     # NOTE: The usage API has aggressive rate limiting. Do NOT reduce this interval
-    # below 120s or you will hit 429 errors. With backoff, 429s delay the next poll
-    # by up to 30 min (exponential: 300s → 600s → 1200s → 1800s cap).
-    if ($script:usageTicks -ge ($script:usageInterval + $script:usageBackoff) -and -not $script:usageJob) {
+    # below 120s or you will hit 429 errors. During debugging, avoid rapid manual API
+    # calls — even 10-15 calls in a short window can trigger rate limiting that lasts
+    # 10+ minutes. Use a single test call and wait for results.
+    if ($script:usageTicks -ge 180 -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
