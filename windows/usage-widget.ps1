@@ -109,10 +109,15 @@ function Get-UsageData {
                              elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" }
                              else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
         }
+        $sevenSonnetPct = 0
+        if ($resp.seven_day_sonnet) {
+            $sevenSonnetPct = [math]::Round($resp.seven_day_sonnet.utilization, 1)
+        }
         return @{
             error = $null; sub = $tokenInfo.sub
             fivePct = $fiveHourPct; sevenPct = $sevenDayPct
             fiveReset = $fiveResetStr; sevenReset = $sevenResetStr
+            sevenSonnetPct = $sevenSonnetPct
         }
     } catch {
         return @{ error = "PARSE ERROR"; sub = $tokenInfo.sub }
@@ -269,7 +274,31 @@ $xaml = @"
                                VerticalAlignment="Center"/>
                 </Grid>
                 <TextBlock x:Name="SevenReset" Text="RESET: --" Foreground="#8830D158"
-                           FontSize="22" FontFamily="Consolas" Margin="200 0 0 12"/>
+                           FontSize="22" FontFamily="Consolas" Margin="200 0 0 8"/>
+
+                <!-- ═══ 7-DAY SONNET BAR ═══ -->
+                <Grid Margin="0 0 0 4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="7D SONNET" Foreground="#9930D158" FontSize="22"
+                               FontFamily="Consolas" FontWeight="Bold" Width="200"
+                               VerticalAlignment="Center"/>
+
+                    <Border Background="#0D309958" CornerRadius="1" Height="12"
+                            Margin="8 0 12 0" Grid.Column="1" VerticalAlignment="Center"
+                            BorderBrush="#2230D158" BorderThickness="1">
+                        <Border x:Name="SonnetBar" Background="#30D158" Width="0"
+                                CornerRadius="0" HorizontalAlignment="Left"/>
+                    </Border>
+
+                    <TextBlock x:Name="SonnetLabel" Text="0.0%" Foreground="#9930D158"
+                               FontSize="16" FontWeight="Bold" FontFamily="Consolas"
+                               Grid.Column="2" Width="80" TextAlignment="Right"
+                               VerticalAlignment="Center"/>
+                </Grid>
 
                 <!-- ═══ SYSTEM METRICS DIVIDER ═══ -->
                 <Border Height="1" Background="#2230D158" Margin="0 4 0 10"/>
@@ -510,6 +539,8 @@ $fiveReset  = $window.FindName("FiveReset")
 $sevenBar   = $window.FindName("SevenBar")
 $sevenLabel = $window.FindName("SevenLabel")
 $sevenReset = $window.FindName("SevenReset")
+$sonnetBar   = $window.FindName("SonnetBar")
+$sonnetLabel = $window.FindName("SonnetLabel")
 $errorLabel = $window.FindName("ErrorLabel")
 $cpuBar     = $window.FindName("CpuBar")
 $cpuLabel   = $window.FindName("CpuLabel")
@@ -1192,6 +1223,14 @@ function Update-Widget($preUsage, $preOutage) {
         $sevenLabel.Text       = "$($displayData.sevenPct)%"
         $sevenLabel.Foreground = $bc.ConvertFrom($sc.text)
         $sevenReset.Text       = "RESET: $($displayData.sevenReset)"
+
+        # 7-day Sonnet only
+        $sonnetPct = if ($displayData.sevenSonnetPct) { $displayData.sevenSonnetPct } else { 0 }
+        $sonnetc = Get-WYColor $sonnetPct
+        $sonnetBar.Background   = $bc.ConvertFrom($sonnetc.bar)
+        $sonnetBar.Width        = [math]::Max(0, [math]::Round($barMaxWidth * [math]::Min($sonnetPct, 100) / 100))
+        $sonnetLabel.Text       = "$sonnetPct%"
+        $sonnetLabel.Foreground = $bc.ConvertFrom("#9930D158")
     }
 
     # ── Outage Status ──
@@ -1637,7 +1676,9 @@ if (-not $usageData) {
             $sevenDiff = $sevenReset - $now
             $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" } elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" } elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" } else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
         }
-        $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr }
+        $sevenSonnetPct = 0
+        if ($resp.seven_day_sonnet) { $sevenSonnetPct = [math]::Round($resp.seven_day_sonnet.utilization, 1) }
+        $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr; sevenSonnetPct = $sevenSonnetPct }
     } catch {
         $usageData = @{ error = "PARSE ERROR"; sub = $subType }
     }
