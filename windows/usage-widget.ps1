@@ -1477,6 +1477,15 @@ $skinShadowbrokerItem.Add_Click({
 $skinMenuItem.Items.Add($skinClassicItem) | Out-Null
 $skinMenuItem.Items.Add($skinShadowbrokerItem) | Out-Null
 
+# Override WPF system menu background color for all sub-menu popups (default = white OS theme)
+$script:darkMenuBrush = New-Object System.Windows.Media.SolidColorBrush
+$script:darkMenuBrush.Color = [System.Windows.Media.Color]::FromArgb(0xF0, 0x08, 0x0C, 0x10)
+$script:darkMenuBrush.Freeze()
+foreach ($mi in @($skinMenuItem, $opacityMenuItem, $hueMenuItem)) {
+    try { $mi.Resources[[System.Windows.SystemColors]::MenuBrushKey] = $script:darkMenuBrush } catch {}
+    try { $mi.Resources[[System.Windows.SystemColors]::MenuBarBrushKey] = $script:darkMenuBrush } catch {}
+}
+
 # ElevenLabs toggle menu item
 $elevenLabsMenuItem = New-Object System.Windows.Controls.MenuItem
 $elevenLabsMenuItem.Header = if ($script:showElevenLabs) { "ELEVENLABS: ON" } else { "ELEVENLABS: OFF" }
@@ -1837,6 +1846,9 @@ $window.Add_ContentRendered({
         $window.Left = $screen.Right - $window.ActualWidth - 10
         $window.Top  = $screen.Bottom - $window.ActualHeight - 10
     }
+    # Re-apply appearance after first render — catches any elements missed during window.Loaded
+    # (WPF visual tree is not fully realized until after the first paint)
+    Apply-Appearance
 })
 
 [void]$window.ShowDialog()
