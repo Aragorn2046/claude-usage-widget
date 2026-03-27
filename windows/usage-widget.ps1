@@ -128,21 +128,21 @@ function Get-UsageData {
 $settingsPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "usage-widget-settings.json"
 
 function Load-Settings {
-    $defaults = @{ Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false; BgOpacity = 50; ShowBorder = $true; RetroLook = $false; HueShift = 0; Skin = "Classic"; ShowElevenLabs = $true }
+    $defaults = @{
+        Left = $null; Top = $null; Width = 520; Height = 580; Locked = $false
+        BgOpacity = 50; ShowBorder = $true; RetroLook = $false; HueShift = 0
+        Skin = "Classic"; ShowElevenLabs = $true; Topmost = $false
+        UsageWarnPct = 50; UsageCritPct = 80
+        TempWarnC = 60; TempCritC = 80
+        PollIntervalSec = 180
+    }
     if (Test-Path $script:settingsPath) {
         try {
             $saved = Get-Content $script:settingsPath -Raw | ConvertFrom-Json
-            if ($null -ne $saved.Left)   { $defaults.Left   = $saved.Left }
-            if ($null -ne $saved.Top)    { $defaults.Top    = $saved.Top }
-            if ($null -ne $saved.Width)  { $defaults.Width  = $saved.Width }
-            if ($null -ne $saved.Height) { $defaults.Height = $saved.Height }
-            if ($null -ne $saved.Locked) { $defaults.Locked = $saved.Locked }
-            if ($null -ne $saved.BgOpacity) { $defaults.BgOpacity = $saved.BgOpacity }
-            if ($null -ne $saved.ShowBorder) { $defaults.ShowBorder = $saved.ShowBorder }
-            if ($null -ne $saved.RetroLook) { $defaults.RetroLook = $saved.RetroLook }
-            if ($null -ne $saved.HueShift) { $defaults.HueShift = $saved.HueShift }
-            if ($null -ne $saved.Skin) { $defaults.Skin = $saved.Skin }
-            if ($null -ne $saved.ShowElevenLabs) { $defaults.ShowElevenLabs = $saved.ShowElevenLabs }
+            foreach ($key in $defaults.Keys.Clone()) {
+                $val = $saved.PSObject.Properties[$key]
+                if ($val -and $null -ne $val.Value) { $defaults[$key] = $val.Value }
+            }
         } catch {}
     }
     return $defaults
@@ -161,6 +161,12 @@ function Save-Settings {
         HueShift = $script:hueShift
         Skin = $script:skinName
         ShowElevenLabs = $script:showElevenLabs
+        Topmost = $script:topmost
+        UsageWarnPct = $script:usageWarnPct
+        UsageCritPct = $script:usageCritPct
+        TempWarnC = $script:tempWarnC
+        TempCritC = $script:tempCritC
+        PollIntervalSec = $script:pollIntervalSec
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -577,6 +583,12 @@ $script:retroLook  = $settings.RetroLook
 $script:hueShift   = $settings.HueShift
 $script:skinName   = $settings.Skin
 $script:showElevenLabs = $settings.ShowElevenLabs
+$script:topmost    = $settings.Topmost
+$script:usageWarnPct  = $settings.UsageWarnPct
+$script:usageCritPct  = $settings.UsageCritPct
+$script:tempWarnC     = $settings.TempWarnC
+$script:tempCritC     = $settings.TempCritC
+$script:pollIntervalSec = $settings.PollIntervalSec
 
 # ── ElevenLabs API key (read from WSL claude-voice config) ────────────────────
 $script:elevenLabsApiKey = $null
@@ -832,8 +844,9 @@ function Apply-Appearance {
     } catch {}
     # Update slider value label colors
     try {
-        if ($script:opacityValueLabel) { $script:opacityValueLabel.Foreground = $bc.ConvertFrom($accentColor) }
-        if ($script:hueValueLabel) { $script:hueValueLabel.Foreground = $bc.ConvertFrom($accentColor) }
+        foreach ($lbl in @($script:opacityValueLabel, $script:hueValueLabel, $script:usageWarnValueLabel, $script:usageCritValueLabel, $script:tempWarnValueLabel, $script:tempCritValueLabel, $script:pollValueLabel)) {
+            if ($lbl) { $lbl.Foreground = $bc.ConvertFrom($accentColor) }
+        }
     } catch {}
 }
 
@@ -898,15 +911,15 @@ $script:lastGoodUsage = $null
 $script:alertPlayer = New-Object System.Windows.Media.MediaPlayer
 
 function Get-WYColor($pct) {
-    if ($pct -lt 50)  { $c = Get-HueColor "#30D158"; return @{ bar = $c; text = $c } }  # green/cyan (skin + hue-shifted)
-    elseif ($pct -lt 80) { return @{ bar = "#D1A830"; text = "#D1A830" } }  # amber (fixed)
-    else { return @{ bar = "#D14030"; text = "#D14030" } }  # red (fixed)
+    if ($pct -lt $script:usageWarnPct)  { $c = Get-HueColor "#30D158"; return @{ bar = $c; text = $c } }
+    elseif ($pct -lt $script:usageCritPct) { return @{ bar = "#D1A830"; text = "#D1A830" } }
+    else { return @{ bar = "#D14030"; text = "#D14030" } }
 }
 
 function Get-TempColor($temp) {
     if ($null -eq $temp -or $temp -eq "N/A") { return Get-HueColor "#8830D158" }
-    if ($temp -lt 60) { return Get-HueColor "#30D158" }
-    elseif ($temp -le 80) { return "#D1A830" }
+    if ($temp -lt $script:tempWarnC) { return Get-HueColor "#30D158" }
+    elseif ($temp -le $script:tempCritC) { return "#D1A830" }
     else { return "#D14030" }
 }
 
@@ -929,53 +942,98 @@ function Get-SystemMetrics {
         } catch { $metrics.cpuPct = 0 }
     }
 
-    # CPU Temperature (4 methods: Performance Counter → WMI ACPI → LHM WMI → LHM DLL)
-    try {
-        $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
-        $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
-        if ($temps) {
-            $avgTemp = ($temps | Measure-Object -Average).Average
-            $metrics.cpuTemp = [math]::Round($avgTemp, 0)
-        }
-    } catch {
+    # CPU Temperature (6 methods: PerfCounter → WMI ACPI → LHM WMI → OHM WMI → LHM DLL → N/A)
+    $tempFound = $false
+
+    # Method 1: Performance Counter (Thermal Zone — works on many systems)
+    if (-not $tempFound) {
+        try {
+            $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
+            $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
+            if ($temps) {
+                $avgTemp = ($temps | Measure-Object -Average).Average
+                if ($avgTemp -gt 0 -and $avgTemp -lt 150) {
+                    $metrics.cpuTemp = [math]::Round($avgTemp, 0)
+                    $tempFound = $true
+                }
+            }
+        } catch {}
+    }
+
+    # Method 2: WMI ACPI Thermal Zone (mostly laptops)
+    if (-not $tempFound) {
         try {
             $tz = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop
             if ($tz) {
                 $kelvin = if ($tz -is [array]) { ($tz | Measure-Object -Property CurrentTemperature -Average).Average } else { $tz.CurrentTemperature }
-                $metrics.cpuTemp = [math]::Round(($kelvin / 10) - 273.15, 0)
-            }
-        } catch {
-            try {
-                $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
-                    Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core' -and $_.Value -gt 0 }
-                if ($lhm) {
-                    $avgTemp = ($lhm | Measure-Object -Property Value -Average).Average
-                    $metrics.cpuTemp = [math]::Round($avgTemp, 0)
+                $celsius = ($kelvin / 10) - 273.15
+                if ($celsius -gt 0 -and $celsius -lt 150) {
+                    $metrics.cpuTemp = [math]::Round($celsius, 0)
+                    $tempFound = $true
                 }
-            } catch {
-                try {
-                    $lhmDll = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll'
-                    if (Test-Path $lhmDll) {
-                        Add-Type -Path $lhmDll -ErrorAction Stop
-                        $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
-                        $computer.IsCpuEnabled = $true
-                        $computer.Open()
-                        $cpuTemps = @()
-                        foreach ($hw in $computer.Hardware) {
-                            $hw.Update()
-                            foreach ($sensor in $hw.Sensors) {
-                                if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
-                                    $cpuTemps += $sensor.Value
-                                }
-                            }
-                        }
-                        if ($cpuTemps.Count -gt 0) { $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0) }
-                        $computer.Close()
-                    }
-                } catch { $metrics.cpuTemp = "N/A" }
             }
+        } catch {}
+    }
+
+    # Method 3: LibreHardwareMonitor WMI namespace (LHM running as service/admin)
+    if (-not $tempFound) {
+        try {
+            $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+                Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core|Package' -and $_.Value -gt 0 }
+            if ($lhm) {
+                $metrics.cpuTemp = [math]::Round(($lhm | Measure-Object -Property Value -Average).Average, 0)
+                $tempFound = $true
+            }
+        } catch {}
+    }
+
+    # Method 4: OpenHardwareMonitor WMI namespace (OHM running as service/admin)
+    if (-not $tempFound) {
+        try {
+            $ohm = Get-CimInstance -Namespace root/OpenHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+                Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core|Package' -and $_.Value -gt 0 }
+            if ($ohm) {
+                $metrics.cpuTemp = [math]::Round(($ohm | Measure-Object -Property Value -Average).Average, 0)
+                $tempFound = $true
+            }
+        } catch {}
+    }
+
+    # Method 5: LibreHardwareMonitor DLL direct (search multiple install locations)
+    if (-not $tempFound) {
+        $lhmPaths = @(
+            (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll')
+            'C:\Program Files\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
+            'C:\Program Files (x86)\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
+            (Join-Path $env:LOCALAPPDATA 'Programs\LibreHardwareMonitor\LibreHardwareMonitorLib.dll')
+        )
+        foreach ($lhmDll in $lhmPaths) {
+            if (-not $lhmDll -or -not (Test-Path $lhmDll)) { continue }
+            try {
+                Add-Type -Path $lhmDll -ErrorAction Stop
+                $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
+                $computer.IsCpuEnabled = $true
+                $computer.Open()
+                $cpuTemps = @()
+                foreach ($hw in $computer.Hardware) {
+                    $hw.Update()
+                    foreach ($sensor in $hw.Sensors) {
+                        if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
+                            $cpuTemps += $sensor.Value
+                        }
+                    }
+                }
+                if ($cpuTemps.Count -gt 0) {
+                    $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0)
+                    $tempFound = $true
+                }
+                $computer.Close()
+                break
+            } catch {}
         }
     }
+
+    if (-not $tempFound) { $metrics.cpuTemp = "N/A" }
 
     # RAM Usage
     try {
@@ -1504,7 +1562,188 @@ $elevenLabsMenuItem.Add_Click({
     Save-Settings
 })
 
+# Topmost toggle
+$topmostMenuItem = New-Object System.Windows.Controls.MenuItem
+$topmostMenuItem.Header = if ($script:topmost) { "TOPMOST: ON" } else { "TOPMOST: OFF" }
+$topmostMenuItem.Style = $ctxItemStyleObj
+$topmostMenuItem.Add_Click({
+    $script:topmost = -not $script:topmost
+    $window.Topmost = $script:topmost
+    $topmostMenuItem.Header = if ($script:topmost) { "TOPMOST: ON" } else { "TOPMOST: OFF" }
+    Save-Settings
+})
+
+# Usage warning threshold slider
+$usageWarnMenuItem = New-Object System.Windows.Controls.MenuItem
+$usageWarnMenuItem.Style = $ctxItemStyleObj
+$usageWarnMenuItem.Header = "WARN %"
+$usageWarnMenuItem.StaysOpenOnClick = $true
+$usageWarnPanel = New-Object System.Windows.Controls.StackPanel
+$usageWarnPanel.Orientation = "Horizontal"
+$usageWarnPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$usageWarnSlider = New-Object System.Windows.Controls.Slider
+$usageWarnSlider.Minimum = 20; $usageWarnSlider.Maximum = 90
+$usageWarnSlider.Value = $script:usageWarnPct
+$usageWarnSlider.Width = 140; $usageWarnSlider.VerticalAlignment = "Center"
+$usageWarnSlider.IsSnapToTickEnabled = $true; $usageWarnSlider.TickFrequency = 5
+$script:usageWarnValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:usageWarnValueLabel.Text = "$($script:usageWarnPct)%"
+$script:usageWarnValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:usageWarnValueLabel.FontFamily = "Consolas"; $script:usageWarnValueLabel.FontSize = 12
+$script:usageWarnValueLabel.Width = 36; $script:usageWarnValueLabel.TextAlignment = "Right"
+$script:usageWarnValueLabel.VerticalAlignment = "Center"
+$script:usageWarnValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$usageWarnSlider.Add_ValueChanged({
+    $script:usageWarnPct = [math]::Round($usageWarnSlider.Value)
+    $script:usageWarnValueLabel.Text = "$($script:usageWarnPct)%"
+    Save-Settings
+})
+$usageWarnPanel.Children.Add($usageWarnSlider) | Out-Null
+$usageWarnPanel.Children.Add($script:usageWarnValueLabel) | Out-Null
+$usageWarnSubItem = New-Object System.Windows.Controls.MenuItem
+$usageWarnSubItem.Header = $usageWarnPanel; $usageWarnSubItem.StaysOpenOnClick = $true
+$usageWarnMenuItem.Items.Add($usageWarnSubItem) | Out-Null
+
+# Usage critical threshold slider
+$usageCritMenuItem = New-Object System.Windows.Controls.MenuItem
+$usageCritMenuItem.Style = $ctxItemStyleObj
+$usageCritMenuItem.Header = "CRIT %"
+$usageCritMenuItem.StaysOpenOnClick = $true
+$usageCritPanel = New-Object System.Windows.Controls.StackPanel
+$usageCritPanel.Orientation = "Horizontal"
+$usageCritPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$usageCritSlider = New-Object System.Windows.Controls.Slider
+$usageCritSlider.Minimum = 50; $usageCritSlider.Maximum = 100
+$usageCritSlider.Value = $script:usageCritPct
+$usageCritSlider.Width = 140; $usageCritSlider.VerticalAlignment = "Center"
+$usageCritSlider.IsSnapToTickEnabled = $true; $usageCritSlider.TickFrequency = 5
+$script:usageCritValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:usageCritValueLabel.Text = "$($script:usageCritPct)%"
+$script:usageCritValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:usageCritValueLabel.FontFamily = "Consolas"; $script:usageCritValueLabel.FontSize = 12
+$script:usageCritValueLabel.Width = 36; $script:usageCritValueLabel.TextAlignment = "Right"
+$script:usageCritValueLabel.VerticalAlignment = "Center"
+$script:usageCritValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$usageCritSlider.Add_ValueChanged({
+    $script:usageCritPct = [math]::Round($usageCritSlider.Value)
+    $script:usageCritValueLabel.Text = "$($script:usageCritPct)%"
+    Save-Settings
+})
+$usageCritPanel.Children.Add($usageCritSlider) | Out-Null
+$usageCritPanel.Children.Add($script:usageCritValueLabel) | Out-Null
+$usageCritSubItem = New-Object System.Windows.Controls.MenuItem
+$usageCritSubItem.Header = $usageCritPanel; $usageCritSubItem.StaysOpenOnClick = $true
+$usageCritMenuItem.Items.Add($usageCritSubItem) | Out-Null
+
+# Thresholds submenu (groups warn/crit)
+$thresholdMenuItem = New-Object System.Windows.Controls.MenuItem
+$thresholdMenuItem.Style = $ctxItemStyleObj
+$thresholdMenuItem.Header = "THRESHOLDS"
+$thresholdMenuItem.StaysOpenOnClick = $true
+$thresholdMenuItem.Items.Add($usageWarnMenuItem) | Out-Null
+$thresholdMenuItem.Items.Add($usageCritMenuItem) | Out-Null
+# Temp warning/critical sliders
+$tempWarnMenuItem = New-Object System.Windows.Controls.MenuItem
+$tempWarnMenuItem.Style = $ctxItemStyleObj
+$tempWarnMenuItem.Header = "TEMP WARN"
+$tempWarnMenuItem.StaysOpenOnClick = $true
+$tempWarnPanel = New-Object System.Windows.Controls.StackPanel
+$tempWarnPanel.Orientation = "Horizontal"
+$tempWarnPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$tempWarnSlider = New-Object System.Windows.Controls.Slider
+$tempWarnSlider.Minimum = 40; $tempWarnSlider.Maximum = 90
+$tempWarnSlider.Value = $script:tempWarnC
+$tempWarnSlider.Width = 140; $tempWarnSlider.VerticalAlignment = "Center"
+$tempWarnSlider.IsSnapToTickEnabled = $true; $tempWarnSlider.TickFrequency = 5
+$script:tempWarnValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:tempWarnValueLabel.Text = "$($script:tempWarnC)$([char]176)C"
+$script:tempWarnValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:tempWarnValueLabel.FontFamily = "Consolas"; $script:tempWarnValueLabel.FontSize = 12
+$script:tempWarnValueLabel.Width = 42; $script:tempWarnValueLabel.TextAlignment = "Right"
+$script:tempWarnValueLabel.VerticalAlignment = "Center"
+$script:tempWarnValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$tempWarnSlider.Add_ValueChanged({
+    $script:tempWarnC = [math]::Round($tempWarnSlider.Value)
+    $script:tempWarnValueLabel.Text = "$($script:tempWarnC)$([char]176)C"
+    Save-Settings
+})
+$tempWarnPanel.Children.Add($tempWarnSlider) | Out-Null
+$tempWarnPanel.Children.Add($script:tempWarnValueLabel) | Out-Null
+$tempWarnSubItem = New-Object System.Windows.Controls.MenuItem
+$tempWarnSubItem.Header = $tempWarnPanel; $tempWarnSubItem.StaysOpenOnClick = $true
+$tempWarnMenuItem.Items.Add($tempWarnSubItem) | Out-Null
+
+$tempCritMenuItem = New-Object System.Windows.Controls.MenuItem
+$tempCritMenuItem.Style = $ctxItemStyleObj
+$tempCritMenuItem.Header = "TEMP CRIT"
+$tempCritMenuItem.StaysOpenOnClick = $true
+$tempCritPanel = New-Object System.Windows.Controls.StackPanel
+$tempCritPanel.Orientation = "Horizontal"
+$tempCritPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$tempCritSlider = New-Object System.Windows.Controls.Slider
+$tempCritSlider.Minimum = 60; $tempCritSlider.Maximum = 110
+$tempCritSlider.Value = $script:tempCritC
+$tempCritSlider.Width = 140; $tempCritSlider.VerticalAlignment = "Center"
+$tempCritSlider.IsSnapToTickEnabled = $true; $tempCritSlider.TickFrequency = 5
+$script:tempCritValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:tempCritValueLabel.Text = "$($script:tempCritC)$([char]176)C"
+$script:tempCritValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:tempCritValueLabel.FontFamily = "Consolas"; $script:tempCritValueLabel.FontSize = 12
+$script:tempCritValueLabel.Width = 42; $script:tempCritValueLabel.TextAlignment = "Right"
+$script:tempCritValueLabel.VerticalAlignment = "Center"
+$script:tempCritValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$tempCritSlider.Add_ValueChanged({
+    $script:tempCritC = [math]::Round($tempCritSlider.Value)
+    $script:tempCritValueLabel.Text = "$($script:tempCritC)$([char]176)C"
+    Save-Settings
+})
+$tempCritPanel.Children.Add($tempCritSlider) | Out-Null
+$tempCritPanel.Children.Add($script:tempCritValueLabel) | Out-Null
+$tempCritSubItem = New-Object System.Windows.Controls.MenuItem
+$tempCritSubItem.Header = $tempCritPanel; $tempCritSubItem.StaysOpenOnClick = $true
+$tempCritMenuItem.Items.Add($tempCritSubItem) | Out-Null
+$thresholdMenuItem.Items.Add($tempWarnMenuItem) | Out-Null
+$thresholdMenuItem.Items.Add($tempCritMenuItem) | Out-Null
+
+# Poll interval slider
+$pollMenuItem = New-Object System.Windows.Controls.MenuItem
+$pollMenuItem.Style = $ctxItemStyleObj
+$pollMenuItem.Header = "POLL RATE"
+$pollMenuItem.StaysOpenOnClick = $true
+$pollPanel = New-Object System.Windows.Controls.StackPanel
+$pollPanel.Orientation = "Horizontal"
+$pollPanel.Margin = [System.Windows.Thickness]::new(0,4,0,4)
+$pollSlider = New-Object System.Windows.Controls.Slider
+$pollSlider.Minimum = 60; $pollSlider.Maximum = 600
+$pollSlider.Value = $script:pollIntervalSec
+$pollSlider.Width = 140; $pollSlider.VerticalAlignment = "Center"
+$pollSlider.IsSnapToTickEnabled = $true; $pollSlider.TickFrequency = 30
+$script:pollValueLabel = New-Object System.Windows.Controls.TextBlock
+$script:pollValueLabel.Text = "$($script:pollIntervalSec)s"
+$script:pollValueLabel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-HueColor "#30D158"))
+$script:pollValueLabel.FontFamily = "Consolas"; $script:pollValueLabel.FontSize = 12
+$script:pollValueLabel.Width = 42; $script:pollValueLabel.TextAlignment = "Right"
+$script:pollValueLabel.VerticalAlignment = "Center"
+$script:pollValueLabel.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+$pollSlider.Add_ValueChanged({
+    $script:pollIntervalSec = [math]::Round($pollSlider.Value)
+    $script:pollValueLabel.Text = "$($script:pollIntervalSec)s"
+    Save-Settings
+})
+$pollPanel.Children.Add($pollSlider) | Out-Null
+$pollPanel.Children.Add($script:pollValueLabel) | Out-Null
+$pollSubItem = New-Object System.Windows.Controls.MenuItem
+$pollSubItem.Header = $pollPanel; $pollSubItem.StaysOpenOnClick = $true
+$pollMenuItem.Items.Add($pollSubItem) | Out-Null
+
+# Register dark submenu background for new submenus
+foreach ($mi in @($thresholdMenuItem, $pollMenuItem, $usageWarnMenuItem, $usageCritMenuItem, $tempWarnMenuItem, $tempCritMenuItem)) {
+    try { $mi.Resources[[System.Windows.SystemColors]::MenuBrushKey] = $script:darkMenuBrush } catch {}
+    try { $mi.Resources[[System.Windows.SystemColors]::MenuBarBrushKey] = $script:darkMenuBrush } catch {}
+}
+
 $ctxMenu.Items.Add($lockMenuItem) | Out-Null
+$ctxMenu.Items.Add($topmostMenuItem) | Out-Null
 $ctxMenu.Items.Add($restartMenuItem) | Out-Null
 $ctxMenu.Items.Add($relinkMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
@@ -1514,6 +1753,9 @@ $ctxMenu.Items.Add($hueMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add($retroMenuItem) | Out-Null
 $ctxMenu.Items.Add($elevenLabsMenuItem) | Out-Null
+$ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
+$ctxMenu.Items.Add($thresholdMenuItem) | Out-Null
+$ctxMenu.Items.Add($pollMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($restartWidgetMenuItem) | Out-Null
 $ctxMenu.Items.Add($closeMenuItem) | Out-Null
@@ -1531,6 +1773,7 @@ $window.Add_MouseRightButtonDown({
 $window.Add_Loaded({
     Apply-LockState
     Apply-Appearance
+    $window.Topmost = $script:topmost
     Update-SysMetrics
     Update-Widget
     # Set initial ElevenLabs visibility and trigger first fetch
@@ -1563,46 +1806,71 @@ try {
         $metrics.cpuPct = [math]::Round($cpu, 0)
     } catch { $metrics.cpuPct = 0 }
 }
-try {
-    $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
-    $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
-    if ($temps) { $metrics.cpuTemp = [math]::Round(($temps | Measure-Object -Average).Average, 0) }
-} catch {
+$tempFound = $false
+if (-not $tempFound) {
+    try {
+        $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
+        $temps = $samples | Where-Object { $_.CookedValue -gt 200 } | ForEach-Object { $_.CookedValue - 273.15 }
+        if ($temps) {
+            $avg = ($temps | Measure-Object -Average).Average
+            if ($avg -gt 0 -and $avg -lt 150) { $metrics.cpuTemp = [math]::Round($avg, 0); $tempFound = $true }
+        }
+    } catch {}
+}
+if (-not $tempFound) {
     try {
         $tz = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop
         if ($tz) {
             $kelvin = if ($tz -is [array]) { ($tz | Measure-Object -Property CurrentTemperature -Average).Average } else { $tz.CurrentTemperature }
-            $metrics.cpuTemp = [math]::Round(($kelvin / 10) - 273.15, 0)
+            $c = ($kelvin / 10) - 273.15
+            if ($c -gt 0 -and $c -lt 150) { $metrics.cpuTemp = [math]::Round($c, 0); $tempFound = $true }
         }
-    } catch {
+    } catch {}
+}
+if (-not $tempFound) {
+    try {
+        $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+            Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core|Package' -and $_.Value -gt 0 }
+        if ($lhm) { $metrics.cpuTemp = [math]::Round(($lhm | Measure-Object -Property Value -Average).Average, 0); $tempFound = $true }
+    } catch {}
+}
+if (-not $tempFound) {
+    try {
+        $ohm = Get-CimInstance -Namespace root/OpenHardwareMonitor -ClassName Sensor -ErrorAction Stop |
+            Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core|Package' -and $_.Value -gt 0 }
+        if ($ohm) { $metrics.cpuTemp = [math]::Round(($ohm | Measure-Object -Property Value -Average).Average, 0); $tempFound = $true }
+    } catch {}
+}
+if (-not $tempFound) {
+    $lhmPaths = @(
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll')
+        'C:\Program Files\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
+        'C:\Program Files (x86)\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
+        (Join-Path $env:LOCALAPPDATA 'Programs\LibreHardwareMonitor\LibreHardwareMonitorLib.dll')
+    )
+    foreach ($lhmDll in $lhmPaths) {
+        if (-not $lhmDll -or -not (Test-Path $lhmDll)) { continue }
         try {
-            $lhm = Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction Stop |
-                Where-Object { $_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Core' -and $_.Value -gt 0 }
-            if ($lhm) { $metrics.cpuTemp = [math]::Round(($lhm | Measure-Object -Property Value -Average).Average, 0) }
-        } catch {
-            try {
-                $lhmDll = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitorLib.dll'
-                if (Test-Path $lhmDll) {
-                    Add-Type -Path $lhmDll -ErrorAction Stop
-                    $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
-                    $computer.IsCpuEnabled = $true
-                    $computer.Open()
-                    $cpuTemps = @()
-                    foreach ($hw in $computer.Hardware) {
-                        $hw.Update()
-                        foreach ($sensor in $hw.Sensors) {
-                            if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
-                                $cpuTemps += $sensor.Value
-                            }
-                        }
+            Add-Type -Path $lhmDll -ErrorAction Stop
+            $computer = [LibreHardwareMonitor.Hardware.Computer]::new()
+            $computer.IsCpuEnabled = $true
+            $computer.Open()
+            $cpuTemps = @()
+            foreach ($hw in $computer.Hardware) {
+                $hw.Update()
+                foreach ($sensor in $hw.Sensors) {
+                    if ($sensor.SensorType -eq [LibreHardwareMonitor.Hardware.SensorType]::Temperature -and $sensor.Value) {
+                        $cpuTemps += $sensor.Value
                     }
-                    if ($cpuTemps.Count -gt 0) { $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0) }
-                    $computer.Close()
                 }
-            } catch { $metrics.cpuTemp = "N/A" }
-        }
+            }
+            if ($cpuTemps.Count -gt 0) { $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0); $tempFound = $true }
+            $computer.Close()
+            break
+        } catch {}
     }
 }
+if (-not $tempFound) { $metrics.cpuTemp = "N/A" }
 try {
     $os = Get-CimInstance Win32_OperatingSystem
     $totalKB = $os.TotalVisibleMemorySize; $freeKB = $os.FreePhysicalMemory; $usedKB = $totalKB - $freeKB
@@ -1819,12 +2087,9 @@ $pollTimer.Add_Tick({
         $script:elevenJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 
-    # Start usage+outage job every 180s / 3min (if not already running)
-    # NOTE: The usage API has aggressive rate limiting. Do NOT reduce this interval
-    # below 120s or you will hit 429 errors. During debugging, avoid rapid manual API
-    # calls — even 10-15 calls in a short window can trigger rate limiting that lasts
-    # 10+ minutes. Use a single test call and wait for results.
-    if ($script:usageTicks -ge 180 -and -not $script:usageJob) {
+    # Start usage+outage job every N seconds (configurable, min 60s)
+    # NOTE: The usage API has aggressive rate limiting. Do NOT set below 60s.
+    if ($script:usageTicks -ge $script:pollIntervalSec -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
