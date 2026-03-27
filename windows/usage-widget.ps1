@@ -1033,6 +1033,36 @@ function Get-SystemMetrics {
         }
     }
 
+    # Method 6: LibreHardwareMonitor Web Server API (http://localhost:8085)
+    if (-not $tempFound) {
+        try {
+            $lhmData = Invoke-RestMethod -Uri 'http://localhost:8085/data.json' -TimeoutSec 2 -ErrorAction Stop
+            $cpuTemps = @()
+            function Find-CpuTemp($node) {
+                if ($node.Text -match 'AMD|Intel|Ryzen|Core i[3579]') {
+                    if ($node.Children) {
+                        foreach ($c in $node.Children) {
+                            if ($c.Text -eq 'Temperatures' -and $c.Children) {
+                                foreach ($s in $c.Children) {
+                                    if ($s.Value -match '[\d,\.]+') {
+                                        $val = [double]($s.Value -replace '[^\d,\.]' -replace ',','.')
+                                        if ($val -gt 0 -and $val -lt 150) { $script:cpuTemps += $val }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if ($node.Children) { foreach ($c in $node.Children) { Find-CpuTemp $c } }
+            }
+            Find-CpuTemp $lhmData
+            if ($cpuTemps.Count -gt 0) {
+                $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0)
+                $tempFound = $true
+            }
+        } catch {}
+    }
+
     if (-not $tempFound) { $metrics.cpuTemp = "N/A" }
 
     # RAM Usage
@@ -1869,6 +1899,35 @@ if (-not $tempFound) {
             break
         } catch {}
     }
+}
+# Method 6: LibreHardwareMonitor Web Server API (http://localhost:8085)
+if (-not $tempFound) {
+    try {
+        $lhmData = Invoke-RestMethod -Uri 'http://localhost:8085/data.json' -TimeoutSec 2 -ErrorAction Stop
+        $cpuTemps = @()
+        function Find-CpuTemp2($node) {
+            if ($node.Text -match 'AMD|Intel|Ryzen|Core i[3579]') {
+                if ($node.Children) {
+                    foreach ($c in $node.Children) {
+                        if ($c.Text -eq 'Temperatures' -and $c.Children) {
+                            foreach ($s in $c.Children) {
+                                if ($s.Value -match '[\d,\.]+') {
+                                    $val = [double]($s.Value -replace '[^\d,\.]' -replace ',','.')
+                                    if ($val -gt 0 -and $val -lt 150) { $script:cpuTemps += $val }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if ($node.Children) { foreach ($c in $node.Children) { Find-CpuTemp2 $c } }
+        }
+        Find-CpuTemp2 $lhmData
+        if ($cpuTemps.Count -gt 0) {
+            $metrics.cpuTemp = [math]::Round(($cpuTemps | Measure-Object -Average).Average, 0)
+            $tempFound = $true
+        }
+    } catch {}
 }
 if (-not $tempFound) { $metrics.cpuTemp = "N/A" }
 try {
