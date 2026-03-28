@@ -1031,11 +1031,10 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
-    # Win32 acrylic has a fixed-intensity frosted blur that can't be reduced.
-    # To control overall opacity WITH acrylic, we use Window.Opacity which
-    # scales the entire composited window (blur + content) as one unit.
-    # The acrylic tint uses the skin's bg color at moderate alpha for the
-    # frosted glass tint. Window.Opacity does the actual transparency control.
+    # AccentState=4 (ACRYLICBLURBEHIND): frosted glass with skin-colored tint.
+    # Opacity slider controls the tint alpha: 0% = pure frosted blur (lightest),
+    # 100% = solid skin color (fully opaque). The blur itself has inherent visual
+    # density — this is a Windows API characteristic, not adjustable.
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
@@ -1043,13 +1042,10 @@ function Apply-Appearance {
                 $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
                 $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
                 $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
-                # Fixed moderate tint for the frosted glass color
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, [byte]160, 4)
-                # Window.Opacity controls actual transparency (0.0 = invisible, 1.0 = full)
-                $window.Opacity = [math]::Max(0.02, $script:bgOpacity / 100)
+                $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 4)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
-                $window.Opacity = 1.0
             }
         }
     } catch {}
