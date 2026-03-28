@@ -1029,19 +1029,27 @@ function Apply-Appearance {
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
-            if ($script:acrylicBlur) {
+            if ($script:acrylicBlur -and $script:bgOpacity -gt 0) {
                 # Parse skin bg color for tint
                 $bgHex = Get-SkinBgHex
                 $r = [Convert]::ToByte($bgHex.Substring(0,2), 16)
                 $g = [Convert]::ToByte($bgHex.Substring(2,2), 16)
                 $b = [Convert]::ToByte($bgHex.Substring(4,2), 16)
-                # Use the opacity slider value for acrylic tint alpha
-                $acrylicAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+                # Map opacity to acrylic tint alpha.
+                # The blur itself adds ~30-40% visual density, so we compress the
+                # tint range: opacity 1-100 → alpha 1-220 (never fully opaque,
+                # the blur fills the rest). This gives usable range across the
+                # whole slider instead of looking "full" at 50%.
+                $acrylicAlpha = [byte][math]::Min(220, [math]::Max(1, [math]::Round($script:bgOpacity * 220 / 100)))
                 [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $acrylicAlpha)
                 # Make WPF background transparent so Win32 acrylic shows through
-                $outerBorder.Background = $bc.ConvertFrom("#01000000")
+                $outerBorder.Background = $bc.ConvertFrom("#00000000")
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
+                # When acrylic off or opacity=0, restore normal WPF transparency
+                if ($script:bgOpacity -eq 0) {
+                    $outerBorder.Background = $bc.ConvertFrom("#00000000")
+                }
             }
         }
     } catch {}
