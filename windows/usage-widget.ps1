@@ -926,7 +926,18 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     # Background: skin-dependent base color with variable alpha (0-100% → 0x00-0xFF)
-    $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+    # When acrylic is ON, compress the WPF background alpha range so the slider
+    # gives fine control over the blur visibility:
+    #   0% = transparent (pure acrylic blur)
+    #   50% = light tint over blur
+    #   100% = moderately opaque (blur still faintly visible)
+    # Without acrylic: full 0-255 range as normal.
+    if ($script:acrylicBlur) {
+        # Map 0-100% → alpha 0-120 (max ~47% opaque, blur always shows through)
+        $alpha = [math]::Round($script:bgOpacity * 120 / 100)
+    } else {
+        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+    }
     $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
     $bgBase = Get-SkinBgHex
     $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
