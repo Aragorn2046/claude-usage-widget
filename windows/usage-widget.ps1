@@ -26,12 +26,56 @@ if ($args -notcontains '-Detached') {
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 
-# ── Win32 Acrylic Blur API ───────────────────────────────────────────────────
+# ── Win32 Acrylic/DWM API ────────────────────────────────────────────────────
+# Two APIs available:
+#   Modern (Win11 22H2+): DwmSetWindowAttribute with DWMWA_SYSTEMBACKDROP_TYPE
+#     — Same API Windows Terminal uses. Light, controllable acrylic.
+#   Legacy (Win10+): SetWindowCompositionAttribute with AccentState=4
+#     — Heavy fixed-intensity blur. Fallback only.
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
 public class AcrylicHelper {
+    // ── Modern DWM API (Win11 22H2+) ──
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref MARGINS margins);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MARGINS {
+        public int Left, Right, Top, Bottom;
+    }
+
+    // Enable modern system acrylic backdrop (same as Windows Terminal)
+    // Returns true if the API succeeded (Win11 22H2+)
+    public static bool SetSystemBackdrop(IntPtr hwnd, int backdropType) {
+        // DWMWA_SYSTEMBACKDROP_TYPE = 38
+        // 0=Auto, 1=None, 2=Mica, 3=Acrylic, 4=MicaAlt
+        try {
+            int result = DwmSetWindowAttribute(hwnd, 38, ref backdropType, sizeof(int));
+            return result == 0;  // S_OK
+        } catch {
+            return false;
+        }
+    }
+
+    // Extend DWM frame into entire client area (prerequisite for system backdrop)
+    public static void ExtendFrame(IntPtr hwnd) {
+        var margins = new MARGINS { Left = -1, Right = -1, Top = -1, Bottom = -1 };
+        DwmExtendFrameIntoClientArea(hwnd, ref margins);
+    }
+
+    // Set immersive dark mode (helps DWM render correct backdrop colors)
+    public static void SetDarkMode(IntPtr hwnd, bool dark) {
+        int value = dark ? 1 : 0;
+        // DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        DwmSetWindowAttribute(hwnd, 20, ref value, sizeof(int));
+    }
+
+    // ── Legacy API (fallback for Win10 / older Win11) ──
     [DllImport("user32.dll")]
     internal static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
@@ -50,14 +94,14 @@ public class AcrylicHelper {
         public int AnimationId;
     }
 
-    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha, int accentState = 4) {
+    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha) {
         var accent = new AccentPolicy();
-        accent.AccentState = accentState;  // 3=BLURBEHIND (light), 4=ACRYLIC (heavy)
-        accent.AccentFlags = 2;  // ACCENT_FLAG_DRAW_ALL
+        accent.AccentState = 4;  // ACCENT_ENABLE_ACRYLICBLURBEHIND
+        accent.AccentFlags = 2;
         accent.GradientColor = ((uint)alpha << 24) | ((uint)b << 16) | ((uint)g << 8) | (uint)r;
 
         var data = new WindowCompositionAttributeData();
-        data.Attribute = 19;  // WCA_ACCENT_POLICY
+        data.Attribute = 19;
         int accentSize = Marshal.SizeOf(accent);
         IntPtr accentPtr = Marshal.AllocHGlobal(accentSize);
         Marshal.StructureToPtr(accent, accentPtr, false);
@@ -70,7 +114,7 @@ public class AcrylicHelper {
 
     public static void DisableAcrylic(IntPtr hwnd) {
         var accent = new AccentPolicy();
-        accent.AccentState = 0;  // ACCENT_DISABLED
+        accent.AccentState = 0;
 
         var data = new WindowCompositionAttributeData();
         data.Attribute = 19;
@@ -926,14 +970,17 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $bgBase = Get-SkinBgHex
-    # Background: when acrylic is OFF, WPF background handles opacity via slider.
-    # When acrylic is ON, WPF bg = transparent; acrylic tint handles everything.
-    if (-not $script:acrylicBlur) {
-        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
-        $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
-        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
-    } else {
+    # Background opacity: WPF background alpha from slider in ALL modes.
+    # Modern acrylic (Win11 22H2+): system backdrop shows through transparent areas.
+    # Legacy acrylic: tint-controlled blur; WPF bg stays transparent so tint is visible.
+    $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+    $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
+    if ($script:acrylicBlur -and -not $script:modernAcrylicSupported) {
+        # Legacy acrylic: WPF bg transparent, acrylic tint handles color+opacity
         $outerBorder.Background = $bc.ConvertFrom("#00000000")
+    } else {
+        # Normal mode OR modern acrylic: WPF bg alpha from slider
+        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
     }
     # Border
     if ($script:showBorder) {
@@ -1030,22 +1077,34 @@ function Apply-Appearance {
         }
     } catch {}
 
-    # ── Acrylic blur (Win32 DWM composition) ──
-    # AccentState=4 (ACRYLICBLURBEHIND): frosted glass with skin-colored tint.
-    # Opacity slider controls the tint alpha: 0% = pure frosted blur (lightest),
-    # 100% = solid skin color (fully opaque). The blur itself has inherent visual
-    # density — this is a Windows API characteristic, not adjustable.
+    # ── Acrylic blur ──
+    # Modern API (Win11 22H2+): DwmSetWindowAttribute with DWMWA_SYSTEMBACKDROP_TYPE=3
+    #   Same API as Windows Terminal. Opacity slider controls WPF bg alpha — system
+    #   acrylic shows through transparent areas. Full range: 0% = see-through, 100% = solid.
+    # Legacy fallback (Win10/older Win11): SetWindowCompositionAttribute AccentState=4
+    #   Tint alpha from slider. Has inherent visual density from blur.
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
             if ($script:acrylicBlur) {
-                $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
-                $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
-                $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
-                $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 4)
+                if ($script:modernAcrylicSupported) {
+                    # Modern: enable system acrylic backdrop
+                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 3)
+                } else {
+                    # Legacy fallback: tint-controlled acrylic
+                    $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
+                    $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
+                    $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
+                    $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+                    [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha)
+                }
             } else {
-                [AcrylicHelper]::DisableAcrylic($hwnd)
+                if ($script:modernAcrylicSupported) {
+                    # Modern: disable system backdrop
+                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 1)
+                } else {
+                    [AcrylicHelper]::DisableAcrylic($hwnd)
+                }
             }
         }
     } catch {}
@@ -2110,6 +2169,18 @@ $window.Add_MouseRightButtonDown({
     $e.Handled = $true
 })
 $window.Add_Loaded({
+    # ── DWM initialization — test modern acrylic API (Win11 22H2+) ──
+    $script:modernAcrylicSupported = $false
+    try {
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+        if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
+            [AcrylicHelper]::SetDarkMode($hwnd, $true)
+            [AcrylicHelper]::ExtendFrame($hwnd)
+            # Test modern API by setting backdrop to "None" — returns true if API exists
+            $script:modernAcrylicSupported = [AcrylicHelper]::SetSystemBackdrop($hwnd, 1)
+        }
+    } catch {}
+
     Apply-LockState
     Apply-Appearance
     $window.Topmost = $script:topmost
