@@ -10,6 +10,19 @@
 # System metrics refresh every 3s; usage + outage status refresh every 60s.
 
 #Requires -Version 5.1
+
+# ── Auto-Detach from Terminal ────────────────────────────────────────────────
+# If launched from a terminal (interactive session), re-launch as a detached
+# process so the widget survives terminal closure. The -Detached flag prevents
+# infinite re-launch loops.
+if ($args -notcontains '-Detached') {
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if ($scriptPath) {
+        Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Detached" -WindowStyle Hidden
+        exit 0
+    }
+}
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 
@@ -1548,7 +1561,7 @@ $restartWidgetMenuItem.Add_Click({
         $script:widgetMutex.Dispose()
         $script:widgetMutex = $null
     }
-    Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+    Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Detached" -WindowStyle Hidden
     $window.Close()
 })
 
