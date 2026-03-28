@@ -127,6 +127,25 @@ public class AcrylicHelper {
         SetWindowCompositionAttribute(hwnd, ref data);
         Marshal.FreeHGlobal(accentPtr);
     }
+
+    // Transparent gradient — lightweight transparency without blur (Win10+ fallback)
+    public static void EnableTransparentGradient(IntPtr hwnd, byte r, byte g, byte b, byte alpha) {
+        var accent = new AccentPolicy();
+        accent.AccentState = 2;  // ACCENT_ENABLE_TRANSPARENTGRADIENT
+        accent.AccentFlags = 2;
+        accent.GradientColor = ((uint)alpha << 24) | ((uint)b << 16) | ((uint)g << 8) | (uint)r;
+
+        var data = new WindowCompositionAttributeData();
+        data.Attribute = 19;
+        int accentSize = Marshal.SizeOf(accent);
+        IntPtr accentPtr = Marshal.AllocHGlobal(accentSize);
+        Marshal.StructureToPtr(accent, accentPtr, false);
+        data.Data = accentPtr;
+        data.SizeOfData = accentSize;
+
+        SetWindowCompositionAttribute(hwnd, ref data);
+        Marshal.FreeHGlobal(accentPtr);
+    }
 }
 "@ -ReferencedAssemblies PresentationCore
 
@@ -309,7 +328,7 @@ $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="520" Height="580" MinWidth="320" MinHeight="200"
-        WindowStyle="None" AllowsTransparency="True"
+        WindowStyle="None"
         Background="Transparent" Topmost="False"
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
         Left="20" Top="20">
@@ -970,17 +989,17 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $bgBase = Get-SkinBgHex
-    # Background opacity: WPF background alpha from slider in ALL modes.
-    # Modern acrylic (Win11 22H2+): system backdrop shows through transparent areas.
-    # Legacy acrylic: tint-controlled blur; WPF bg stays transparent so tint is visible.
+    # Background opacity: controlled by WPF background alpha.
+    # Modern (Win11): WPF bg alpha from slider — DWM backdrop shows through transparent areas.
+    # Legacy (Win10): accent policy handles both color and alpha — WPF bg transparent.
     $alpha = [math]::Round($script:bgOpacity * 255 / 100)
     $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
-    if ($script:acrylicBlur -and -not $script:modernAcrylicSupported) {
-        # Legacy acrylic: WPF bg transparent, acrylic tint handles color+opacity
-        $outerBorder.Background = $bc.ConvertFrom("#00000000")
-    } else {
-        # Normal mode OR modern acrylic: WPF bg alpha from slider
+    if ($script:modernAcrylicSupported) {
+        # Modern: WPF bg alpha = slider value. System backdrop visible through transparent areas.
         $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    } else {
+        # Legacy: accent policy controls color+alpha. WPF bg transparent so accent shows.
+        $outerBorder.Background = $bc.ConvertFrom("#00000000")
     }
     # Border
     if ($script:showBorder) {
@@ -1077,33 +1096,31 @@ function Apply-Appearance {
         }
     } catch {}
 
-    # ── Acrylic blur ──
-    # Modern API (Win11 22H2+): DwmSetWindowAttribute with DWMWA_SYSTEMBACKDROP_TYPE=3
-    #   Same API as Windows Terminal. Opacity slider controls WPF bg alpha — system
-    #   acrylic shows through transparent areas. Full range: 0% = see-through, 100% = solid.
-    # Legacy fallback (Win10/older Win11): SetWindowCompositionAttribute AccentState=4
-    #   Tint alpha from slider. Has inherent visual density from blur.
+    # ── Acrylic / transparency (DWM composition) ──
+    # Without AllowsTransparency, ALL transparency goes through DWM APIs.
+    # Modern (Win11 22H2+): DWMWA_SYSTEMBACKDROP_TYPE — same as Windows Terminal
+    # Legacy (Win10): SetWindowCompositionAttribute accent policies
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
-            if ($script:acrylicBlur) {
-                if ($script:modernAcrylicSupported) {
-                    # Modern: enable system acrylic backdrop
-                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 3)
+            $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
+            $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
+            $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
+            $bgAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+
+            if ($script:modernAcrylicSupported) {
+                # Modern path: system backdrop handles blur, WPF bg alpha handles opacity
+                if ($script:acrylicBlur) {
+                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 3)  # Acrylic
                 } else {
-                    # Legacy fallback: tint-controlled acrylic
-                    $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
-                    $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
-                    $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
-                    $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
-                    [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha)
+                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 1)  # None (transparent)
                 }
             } else {
-                if ($script:modernAcrylicSupported) {
-                    # Modern: disable system backdrop
-                    [AcrylicHelper]::SetSystemBackdrop($hwnd, 1)
+                # Legacy path: accent policies for both modes
+                if ($script:acrylicBlur) {
+                    [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $bgAlpha)
                 } else {
-                    [AcrylicHelper]::DisableAcrylic($hwnd)
+                    [AcrylicHelper]::EnableTransparentGradient($hwnd, $r, $g, $b, $bgAlpha)
                 }
             }
         }
@@ -2169,14 +2186,22 @@ $window.Add_MouseRightButtonDown({
     $e.Handled = $true
 })
 $window.Add_Loaded({
-    # ── DWM initialization — test modern acrylic API (Win11 22H2+) ──
+    # ── DWM composition setup ──
+    # Without AllowsTransparency, we use DWM frame extension for transparency.
+    # This is the same approach Windows Terminal uses.
     $script:modernAcrylicSupported = $false
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
-            [AcrylicHelper]::SetDarkMode($hwnd, $true)
+            # Make the Win32 window background transparent (DWM glass shows through)
+            $hwndSource = [System.Windows.Interop.HwndSource]::FromHwnd($hwnd)
+            $hwndSource.CompositionTarget.BackgroundColor = [System.Windows.Media.Colors]::Transparent
+
+            # Extend DWM frame into entire client area
             [AcrylicHelper]::ExtendFrame($hwnd)
-            # Test modern API by setting backdrop to "None" — returns true if API exists
+            [AcrylicHelper]::SetDarkMode($hwnd, $true)
+
+            # Test modern backdrop API (Win11 22H2+)
             $script:modernAcrylicSupported = [AcrylicHelper]::SetSystemBackdrop($hwnd, 1)
         }
     } catch {}
