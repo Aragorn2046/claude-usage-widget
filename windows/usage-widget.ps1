@@ -13,6 +13,16 @@
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 
+# ── Single-Instance Mutex ────────────────────────────────────────────────────
+$script:mutexName = "Global\ClaudeUsageWidget_SingleInstance"
+$script:mutexCreated = $false
+$script:widgetMutex = New-Object System.Threading.Mutex($true, $script:mutexName, [ref]$script:mutexCreated)
+if (-not $script:mutexCreated) {
+    # Another instance is already running — exit silently
+    $script:widgetMutex.Dispose()
+    exit 0
+}
+
 # ── Credentials & Token ──────────────────────────────────────────────────────
 $credPath = "$env:USERPROFILE\.claude\.credentials.json"
 # WSL credentials path (Claude Code /login writes here; widget reads Windows path)
@@ -1532,6 +1542,12 @@ $restartWidgetMenuItem.Style = $ctxItemStyleObj
 $restartWidgetMenuItem.Add_Click({
     $scriptPath = $MyInvocation.MyCommand.Path
     if (-not $scriptPath) { $scriptPath = Join-Path (Split-Path -Parent $script:settingsPath) "usage-widget.ps1" }
+    # Release mutex before spawning new instance so it can acquire it
+    if ($script:widgetMutex) {
+        try { $script:widgetMutex.ReleaseMutex() } catch {}
+        $script:widgetMutex.Dispose()
+        $script:widgetMutex = $null
+    }
     Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $window.Close()
 })
@@ -2348,3 +2364,9 @@ $window.Add_ContentRendered({
 })
 
 [void]$window.ShowDialog()
+
+# ── Release single-instance mutex ────────────────────────────────────────────
+if ($script:widgetMutex) {
+    try { $script:widgetMutex.ReleaseMutex() } catch {}
+    $script:widgetMutex.Dispose()
+}
