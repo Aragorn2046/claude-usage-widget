@@ -926,12 +926,15 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $bgBase = Get-SkinBgHex
-    # Background: opacity slider always controls WPF background transparency.
-    # When acrylic is ON, the frosted blur sits BEHIND the WPF background —
-    # low opacity = see through to acrylic blur, high opacity = solid over blur.
-    $alpha = [math]::Round($script:bgOpacity * 255 / 100)
-    $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
-    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    # Background: when acrylic is OFF, WPF background handles opacity via slider.
+    # When acrylic is ON, WPF bg = transparent; acrylic tint handles everything.
+    if (-not $script:acrylicBlur) {
+        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+        $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
+        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    } else {
+        $outerBorder.Background = $bc.ConvertFrom("#00000000")
+    }
     # Border
     if ($script:showBorder) {
         $outerBorder.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
@@ -1028,20 +1031,25 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
-    # Acrylic blur is a constant frosted-glass layer BEHIND the WPF background.
-    # The opacity slider controls the WPF background on top — not the blur.
-    #   Opacity 0% + Acrylic ON = frosted glass, fully see-through to blur
-    #   Opacity 2% + Acrylic ON = subtle tinted frosted glass (user's preferred)
-    #   Opacity 100% + Acrylic ON = fully opaque, blur hidden beneath solid bg
+    # Win32 acrylic has a fixed-intensity frosted blur that can't be reduced.
+    # To control overall opacity WITH acrylic, we use Window.Opacity which
+    # scales the entire composited window (blur + content) as one unit.
+    # The acrylic tint uses the skin's bg color at moderate alpha for the
+    # frosted glass tint. Window.Opacity does the actual transparency control.
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
             if ($script:acrylicBlur) {
-                # Minimal tint (alpha=1) — the blur effect itself is the feature.
-                # WPF background layer above handles all opacity control.
-                [AcrylicHelper]::EnableAcrylic($hwnd, 0, 0, 0, [byte]1, 4)
+                $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
+                $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
+                $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
+                # Fixed moderate tint for the frosted glass color
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, [byte]160, 4)
+                # Window.Opacity controls actual transparency (0.0 = invisible, 1.0 = full)
+                $window.Opacity = [math]::Max(0.02, $script:bgOpacity / 100)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
+                $window.Opacity = 1.0
             }
         }
     } catch {}
