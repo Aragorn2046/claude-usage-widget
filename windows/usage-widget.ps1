@@ -135,6 +135,7 @@ function Load-Settings {
         UsageWarnPct = 50; UsageCritPct = 80
         TempWarnC = 60; TempCritC = 80
         PollIntervalSec = 180
+        Monochrome = $false; FontPack = "Consolas"
     }
     if (Test-Path $script:settingsPath) {
         try {
@@ -167,6 +168,8 @@ function Save-Settings {
         TempWarnC = $script:tempWarnC
         TempCritC = $script:tempCritC
         PollIntervalSec = $script:pollIntervalSec
+        Monochrome = $script:monochrome
+        FontPack = $script:fontPack
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -589,6 +592,35 @@ $script:usageCritPct  = $settings.UsageCritPct
 $script:tempWarnC     = $settings.TempWarnC
 $script:tempCritC     = $settings.TempCritC
 $script:pollIntervalSec = $settings.PollIntervalSec
+$script:monochrome    = $settings.Monochrome
+$script:fontPack      = $settings.FontPack
+
+# ── Load Blueprint font families from bundled TTF files ─────────────────────
+$script:fontsDir = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "fonts"
+$script:fontOrbitron     = $null
+$script:fontShareTech    = $null
+$script:fontRajdhani     = $null
+if (Test-Path $script:fontsDir) {
+    $fontsUri = "file:///" + ($script:fontsDir -replace '\\', '/')
+    $script:fontOrbitron  = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Orbitron")
+    $script:fontShareTech = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Share Tech Mono")
+    $script:fontRajdhani  = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Rajdhani")
+}
+$script:fontConsolas = New-Object System.Windows.Media.FontFamily("Consolas")
+
+# Helper: get the right font for element type based on current font pack
+function Get-WidgetFont([string]$role) {
+    # $role: "header" (bold labels), "data" (values/mono), "body" (detail text)
+    if ($script:fontPack -eq "Blueprint" -and $script:fontOrbitron) {
+        switch ($role) {
+            "header" { return $script:fontOrbitron }
+            "data"   { return $script:fontShareTech }
+            "body"   { return $script:fontShareTech }
+            default  { return $script:fontShareTech }
+        }
+    }
+    return $script:fontConsolas
+}
 
 # ── ElevenLabs API key (read from WSL claude-voice config) ────────────────────
 $script:elevenLabsApiKey = $null
@@ -877,6 +909,9 @@ function Apply-Appearance {
     # Walk the visual tree once to capture original colors, then shift from originals.
     Apply-HueToTree $window
 
+    # ── Apply font pack ──
+    Apply-FontToTree $window
+
     # ── Update context menu colors to match skin ──
     $accentColor = Get-HueColor "#30D158"
     try {
@@ -952,6 +987,40 @@ function Apply-HueToTree($element) {
     }
 }
 
+# ── Font pack: walk visual tree and swap FontFamily ─────────────────────────
+# Blueprint fonts: Orbitron for headers/labels (FontWeight=Bold + FontSize>=22),
+# Share Tech Mono for data values (monospace data). Rajdhani for smaller text.
+function Apply-FontToTree($element) {
+    try {
+        $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($element)
+    } catch { return }
+
+    for ($i = 0; $i -lt $count; $i++) {
+        $child = [System.Windows.Media.VisualTreeHelper]::GetChild($element, $i)
+
+        if ($child -is [System.Windows.Controls.TextBlock]) {
+            if ($script:fontPack -eq "Blueprint" -and $script:fontOrbitron -and $script:fontShareTech) {
+                $isBold = ($child.FontWeight.ToString() -eq "Bold")
+                $size = $child.FontSize
+                if ($isBold -and $size -ge 22) {
+                    # Section headers: ANTHROPIC, 5H CYCLE, CPU, etc.
+                    $child.FontFamily = $script:fontOrbitron
+                } elseif ($isBold) {
+                    # Smaller bold items (percentages, bar labels)
+                    $child.FontFamily = $script:fontShareTech
+                } else {
+                    # Detail text, values
+                    $child.FontFamily = $script:fontShareTech
+                }
+            } else {
+                $child.FontFamily = $script:fontConsolas
+            }
+        }
+
+        Apply-FontToTree $child
+    }
+}
+
 # ── Outage alert sound ───────────────────────────────────────────────────────
 $script:alertSoundPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "outage-alert.mp3"
 $script:prevOutage = @{ ai = "operational"; platform = "operational"; api = "operational"; code = "operational" }
@@ -959,12 +1028,22 @@ $script:lastGoodUsage = $null
 $script:alertPlayer = New-Object System.Windows.Media.MediaPlayer
 
 function Get-WYColor($pct) {
+    if ($script:monochrome) {
+        # Monochrome: same accent color at all levels — percentage tells the story
+        $c = Get-HueColor "#30D158"
+        return @{ bar = $c; text = $c }
+    }
     if ($pct -lt $script:usageWarnPct)  { $c = Get-HueColor "#30D158"; return @{ bar = $c; text = $c } }
     elseif ($pct -lt $script:usageCritPct) { return @{ bar = "#D1A830"; text = "#D1A830" } }
     else { return @{ bar = "#D14030"; text = "#D14030" } }
 }
 
 function Get-TempColor($temp) {
+    if ($script:monochrome) {
+        # Monochrome: same accent color at all levels
+        if ($null -eq $temp -or $temp -eq "N/A") { return Get-HueColor "#8830D158" }
+        return Get-HueColor "#30D158"
+    }
     if ($null -eq $temp -or $temp -eq "N/A") { return Get-HueColor "#8830D158" }
     if ($temp -lt $script:tempWarnC) { return Get-HueColor "#30D158" }
     elseif ($temp -le $script:tempCritC) { return "#D1A830" }
@@ -1233,7 +1312,7 @@ function Update-SysMetrics($precomputed) {
         $lbl = New-Object System.Windows.Controls.TextBlock
         $lbl.Text = "$($disk.letter):"
         $lbl.Foreground = $bc.ConvertFrom((Get-HueColor "#CC30D158"))
-        $lbl.FontSize = 26; $lbl.FontFamily = "Consolas"; $lbl.FontWeight = "Bold"
+        $lbl.FontSize = 26; $lbl.FontFamily = (Get-WidgetFont "header"); $lbl.FontWeight = "Bold"
         $lbl.Width = 200; $lbl.VerticalAlignment = "Center"
         [System.Windows.Controls.Grid]::SetColumn($lbl, 0)
         $grid.Children.Add($lbl) | Out-Null
@@ -1260,7 +1339,7 @@ function Update-SysMetrics($precomputed) {
         $pctLbl = New-Object System.Windows.Controls.TextBlock
         $pctLbl.Text = "$($disk.pct)%"
         $pctLbl.Foreground = $bc.ConvertFrom($dc.text)
-        $pctLbl.FontSize = 18; $pctLbl.FontWeight = "Bold"; $pctLbl.FontFamily = "Consolas"
+        $pctLbl.FontSize = 18; $pctLbl.FontWeight = "Bold"; $pctLbl.FontFamily = (Get-WidgetFont "data")
         $pctLbl.Width = 100; $pctLbl.TextAlignment = "Right"; $pctLbl.VerticalAlignment = "Center"
         [System.Windows.Controls.Grid]::SetColumn($pctLbl, 2)
         $grid.Children.Add($pctLbl) | Out-Null
@@ -1271,7 +1350,7 @@ function Update-SysMetrics($precomputed) {
         $detail = New-Object System.Windows.Controls.TextBlock
         $detail.Text = "$($disk.usedGB)/$($disk.totalGB) GB"
         $detail.Foreground = $bc.ConvertFrom($dc.text)
-        $detail.FontSize = 22; $detail.FontFamily = "Consolas"
+        $detail.FontSize = 22; $detail.FontFamily = (Get-WidgetFont "data")
         $detail.Margin = [System.Windows.Thickness]::new(200,0,0,10)
         $diskPanel.Children.Add($detail) | Out-Null
     }
@@ -1576,6 +1655,49 @@ $retroMenuItem.Add_Click({
     Save-Settings
 })
 
+# Monochrome toggle — bars stay skin accent color at all thresholds
+$monochromeMenuItem = New-Object System.Windows.Controls.MenuItem
+$monochromeMenuItem.Header = if ($script:monochrome) { "MONOCHROME: ON" } else { "MONOCHROME: OFF" }
+$monochromeMenuItem.Style = $ctxItemStyleObj
+$monochromeMenuItem.Add_Click({
+    $script:monochrome = -not $script:monochrome
+    $monochromeMenuItem.Header = if ($script:monochrome) { "MONOCHROME: ON" } else { "MONOCHROME: OFF" }
+    Update-SysMetrics
+    Update-Widget
+    Save-Settings
+})
+
+# Font pack submenu
+$fontMenuItem = New-Object System.Windows.Controls.MenuItem
+$fontMenuItem.Style = $ctxItemStyleObj
+$fontMenuItem.Header = "FONT"
+$fontMenuItem.StaysOpenOnClick = $true
+
+$fontConsolasItem = New-Object System.Windows.Controls.MenuItem
+$fontConsolasItem.Style = $ctxItemStyleObj
+$fontConsolasItem.Header = if ($script:fontPack -eq "Consolas") { "* CONSOLAS" } else { "  CONSOLAS" }
+$fontConsolasItem.Add_Click({
+    $script:fontPack = "Consolas"
+    $fontConsolasItem.Header = "* CONSOLAS"
+    $fontBlueprintItem2.Header = "  BLUEPRINT"
+    Apply-Appearance
+    Save-Settings
+})
+
+$fontBlueprintItem2 = New-Object System.Windows.Controls.MenuItem
+$fontBlueprintItem2.Style = $ctxItemStyleObj
+$fontBlueprintItem2.Header = if ($script:fontPack -eq "Blueprint") { "* BLUEPRINT" } else { "  BLUEPRINT" }
+$fontBlueprintItem2.Add_Click({
+    $script:fontPack = "Blueprint"
+    $fontBlueprintItem2.Header = "* BLUEPRINT"
+    $fontConsolasItem.Header = "  CONSOLAS"
+    Apply-Appearance
+    Save-Settings
+})
+
+$fontMenuItem.Items.Add($fontConsolasItem) | Out-Null
+$fontMenuItem.Items.Add($fontBlueprintItem2) | Out-Null
+
 # Skin submenu
 $skinMenuItem = New-Object System.Windows.Controls.MenuItem
 $skinMenuItem.Style = $ctxItemStyleObj
@@ -1632,7 +1754,7 @@ $skinMenuItem.Items.Add($skinBlueprintItem) | Out-Null
 $script:darkMenuBrush = New-Object System.Windows.Media.SolidColorBrush
 $script:darkMenuBrush.Color = [System.Windows.Media.Color]::FromArgb(0xF0, 0x08, 0x0C, 0x10)
 $script:darkMenuBrush.Freeze()
-foreach ($mi in @($skinMenuItem, $opacityMenuItem, $hueMenuItem)) {
+foreach ($mi in @($skinMenuItem, $opacityMenuItem, $hueMenuItem, $fontMenuItem)) {
     try { $mi.Resources[[System.Windows.SystemColors]::MenuBrushKey] = $script:darkMenuBrush } catch {}
     try { $mi.Resources[[System.Windows.SystemColors]::MenuBarBrushKey] = $script:darkMenuBrush } catch {}
 }
@@ -1845,6 +1967,8 @@ $ctxMenu.Items.Add($opacityMenuItem) | Out-Null
 $ctxMenu.Items.Add($hueMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add($retroMenuItem) | Out-Null
+$ctxMenu.Items.Add($monochromeMenuItem) | Out-Null
+$ctxMenu.Items.Add($fontMenuItem) | Out-Null
 $ctxMenu.Items.Add($elevenLabsMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
 $ctxMenu.Items.Add($thresholdMenuItem) | Out-Null
