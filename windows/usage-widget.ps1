@@ -50,9 +50,9 @@ public class AcrylicHelper {
         public int AnimationId;
     }
 
-    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha) {
+    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha, int accentState = 3) {
         var accent = new AccentPolicy();
-        accent.AccentState = 4;  // ACCENT_ENABLE_ACRYLICBLURBEHIND
+        accent.AccentState = accentState;  // 3=BLURBEHIND (light), 4=ACRYLIC (heavy)
         accent.AccentFlags = 2;  // ACCENT_FLAG_DRAW_ALL
         accent.GradientColor = ((uint)alpha << 24) | ((uint)b << 16) | ((uint)g << 8) | (uint)r;
 
@@ -925,22 +925,16 @@ function Get-SkinCardBg {
 
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
-    # Background: skin-dependent base color with variable alpha (0-100% → 0x00-0xFF)
-    # When acrylic is ON, compress the WPF background alpha range so the slider
-    # gives fine control over the blur visibility:
-    #   0% = transparent (pure acrylic blur)
-    #   50% = light tint over blur
-    #   100% = moderately opaque (blur still faintly visible)
-    # Without acrylic: full 0-255 range as normal.
-    if ($script:acrylicBlur) {
-        # Map 0-100% → alpha 0-120 (max ~47% opaque, blur always shows through)
-        $alpha = [math]::Round($script:bgOpacity * 120 / 100)
-    } else {
-        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
-    }
-    $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
     $bgBase = Get-SkinBgHex
-    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    # Background: when acrylic is OFF, WPF background handles opacity as normal.
+    # When acrylic is ON, WPF background = transparent; acrylic tint alpha = sole control.
+    if (-not $script:acrylicBlur) {
+        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+        $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
+        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    } else {
+        $outerBorder.Background = $bc.ConvertFrom("#00000000")
+    }
     # Border
     if ($script:showBorder) {
         $outerBorder.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
@@ -1037,21 +1031,20 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
-    # Layering: Desktop → Acrylic blur → Acrylic tint → WPF background → Content
-    # The opacity slider controls the WPF background alpha, which sits ON TOP of
-    # the acrylic. Low opacity = blur visible, high opacity = solid over blur.
+    # Uses ACCENT_ENABLE_BLURBEHIND (AccentState=3) — lighter than full acrylic (4).
+    # Opacity slider directly controls the tint alpha over the blur.
+    #   0% = no tint, subtle blur only
+    #   50% = moderate tinted blur
+    #   100% = fully tinted (opaque)
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
             if ($script:acrylicBlur) {
-                # Parse skin bg color for acrylic tint
-                $bgHex = Get-SkinBgHex
-                $r = [Convert]::ToByte($bgHex.Substring(0,2), 16)
-                $g = [Convert]::ToByte($bgHex.Substring(2,2), 16)
-                $b = [Convert]::ToByte($bgHex.Substring(4,2), 16)
-                # Fixed low tint: just enough to color the frosted glass.
-                # The WPF background (line 932) handles opacity control.
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, [byte]50)
+                $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
+                $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
+                $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
+                $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 3)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
             }
