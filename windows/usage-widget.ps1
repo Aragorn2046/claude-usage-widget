@@ -724,19 +724,32 @@ function Hue2Rgb([double]$p, [double]$q, [double]$t) {
 }
 
 # ── Skin color system ─────────────────────────────────────────────────────────
-# Returns the skin-appropriate color by mapping Classic green hex codes to Shadowbroker cyan equivalents.
+# Returns the skin-appropriate color by mapping Classic green hex codes to skin equivalents.
 # For Classic skin: returns the original hex unchanged.
 # For Shadowbroker: remaps green-family (#30D158, #309958) to cyan-family (#00BCD4, #00838F).
+# For Blueprint: remaps to Extended Mind Blueprint blue (#58A6FF, #3A6EA5).
 function Get-SkinBaseColor([string]$hex) {
-    if ($script:skinName -ne "Shadowbroker") { return $hex }
-    # Map Classic green variants to Shadowbroker cyan equivalents (preserving alpha prefixes)
+    if ($script:skinName -eq "Classic") { return $hex }
+    # Map Classic green variants to skin equivalents (preserving alpha prefixes)
     $h = $hex.TrimStart('#')
     # Extract alpha prefix if 8-char hex (AARRGGBB)
     $alpha = ""; $color = $h
     if ($h.Length -eq 8) { $alpha = $h.Substring(0,2); $color = $h.Substring(2) }
     $mapped = switch ($color.ToUpper()) {
-        "30D158" { "00BCD4" }   # primary green → primary cyan
-        "309958" { "00838F" }   # dark green → dark cyan
+        "30D158" {
+            switch ($script:skinName) {
+                "Shadowbroker" { "00BCD4" }   # primary cyan
+                "Blueprint"    { "58A6FF" }   # Blueprint primary blue
+                default        { $null }
+            }
+        }
+        "309958" {
+            switch ($script:skinName) {
+                "Shadowbroker" { "00838F" }   # dark cyan
+                "Blueprint"    { "3A6EA5" }   # Blueprint dark blue
+                default        { $null }
+            }
+        }
         default  { $null }
     }
     if ($mapped) { return "#${alpha}${mapped}" }
@@ -747,16 +760,43 @@ function Get-SkinBaseColor([string]$hex) {
 function Get-HueColor([string]$baseHex) { return Shift-HexColor (Get-SkinBaseColor $baseHex) $script:hueShift }
 
 # Get skin-specific background color (for widget body)
-function Get-SkinBgHex { if ($script:skinName -eq "Shadowbroker") { return "000000" } else { return "080C10" } }
+function Get-SkinBgHex {
+    switch ($script:skinName) {
+        "Shadowbroker" { return "000000" }
+        "Blueprint"    { return "080C14" }
+        default        { return "080C10" }
+    }
+}
 
 # Get skin-specific bar track background
-function Get-SkinTrackBg { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#15008B8F" } else { "#15309958" }) }
+function Get-SkinTrackBg {
+    $base = switch ($script:skinName) {
+        "Shadowbroker" { "#15008B8F" }
+        "Blueprint"    { "#153A6EA5" }
+        default        { "#15309958" }
+    }
+    return Get-HueColor $base
+}
 
 # Get skin-specific bar track border
-function Get-SkinTrackBorder { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#33009BA3" } else { "#3330D158" }) }
+function Get-SkinTrackBorder {
+    $base = switch ($script:skinName) {
+        "Shadowbroker" { "#33009BA3" }
+        "Blueprint"    { "#3358A6FF" }
+        default        { "#3330D158" }
+    }
+    return Get-HueColor $base
+}
 
 # Get skin-specific section bg for outage cards etc
-function Get-SkinCardBg { return Get-HueColor $(if ($script:skinName -eq "Shadowbroker") { "#10008B8F" } else { "#10309958" }) }
+function Get-SkinCardBg {
+    $base = switch ($script:skinName) {
+        "Shadowbroker" { "#10008B8F" }
+        "Blueprint"    { "#103A6EA5" }
+        default        { "#10309958" }
+    }
+    return Get-HueColor $base
+}
 
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
@@ -773,7 +813,7 @@ function Apply-Appearance {
         $outerBorder.BorderBrush = $bc.ConvertFrom("#00000000")
         $outerBorder.BorderThickness = [System.Windows.Thickness]::new(0)
     }
-    # Shadowbroker: cyan glow on outer border
+    # Skin-specific border glow/shadow
     if ($script:skinName -eq "Shadowbroker") {
         $borderGlow = New-Object System.Windows.Media.Effects.DropShadowEffect
         $borderGlow.ShadowDepth = 0
@@ -781,6 +821,14 @@ function Apply-Appearance {
         $glowC = $bc.ConvertFrom((Get-HueColor "#00BCD4"))
         $borderGlow.Color = $glowC.Color
         $borderGlow.Opacity = 0.15
+        $outerBorder.Effect = $borderGlow
+    } elseif ($script:skinName -eq "Blueprint") {
+        $borderGlow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $borderGlow.ShadowDepth = 0
+        $borderGlow.BlurRadius = 20
+        $glowC = $bc.ConvertFrom((Get-HueColor "#58A6FF"))
+        $borderGlow.Color = $glowC.Color
+        $borderGlow.Opacity = 0.2
         $outerBorder.Effect = $borderGlow
     } else {
         # Classic: subtle dark shadow (original)
@@ -835,10 +883,10 @@ function Apply-Appearance {
         if ($ctxMenu) {
             $ctxMenu.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
             $ctxMenu.Foreground = $bc.ConvertFrom($accentColor)
-            if ($script:skinName -eq "Shadowbroker") {
-                $ctxMenu.Background = $bc.ConvertFrom("#F0000000")
-            } else {
-                $ctxMenu.Background = $bc.ConvertFrom("#F0080C10")
+            switch ($script:skinName) {
+                "Shadowbroker" { $ctxMenu.Background = $bc.ConvertFrom("#F0000000") }
+                "Blueprint"    { $ctxMenu.Background = $bc.ConvertFrom("#F0080C14") }
+                default        { $ctxMenu.Background = $bc.ConvertFrom("#F0080C10") }
             }
         }
     } catch {}
@@ -1541,8 +1589,8 @@ $skinClassicItem.Add_Click({
     $script:skinName = "Classic"
     $skinClassicItem.Header = "* CLASSIC"
     $skinShadowbrokerItem.Header = "  SHADOWBROKER"
+    $skinBlueprintItem.Header = "  BLUEPRINT"
     Apply-Appearance
-    # Force refresh system metrics + usage to re-apply bar colors
     Update-SysMetrics
     Update-Widget
     Save-Settings
@@ -1555,8 +1603,22 @@ $skinShadowbrokerItem.Add_Click({
     $script:skinName = "Shadowbroker"
     $skinShadowbrokerItem.Header = "* SHADOWBROKER"
     $skinClassicItem.Header = "  CLASSIC"
+    $skinBlueprintItem.Header = "  BLUEPRINT"
     Apply-Appearance
-    # Force refresh system metrics + usage to re-apply bar colors
+    Update-SysMetrics
+    Update-Widget
+    Save-Settings
+})
+
+$skinBlueprintItem = New-Object System.Windows.Controls.MenuItem
+$skinBlueprintItem.Style = $ctxItemStyleObj
+$skinBlueprintItem.Header = if ($script:skinName -eq "Blueprint") { "* BLUEPRINT" } else { "  BLUEPRINT" }
+$skinBlueprintItem.Add_Click({
+    $script:skinName = "Blueprint"
+    $skinBlueprintItem.Header = "* BLUEPRINT"
+    $skinClassicItem.Header = "  CLASSIC"
+    $skinShadowbrokerItem.Header = "  SHADOWBROKER"
+    Apply-Appearance
     Update-SysMetrics
     Update-Widget
     Save-Settings
@@ -1564,6 +1626,7 @@ $skinShadowbrokerItem.Add_Click({
 
 $skinMenuItem.Items.Add($skinClassicItem) | Out-Null
 $skinMenuItem.Items.Add($skinShadowbrokerItem) | Out-Null
+$skinMenuItem.Items.Add($skinBlueprintItem) | Out-Null
 
 # Override WPF system menu background color for all sub-menu popups (default = white OS theme)
 $script:darkMenuBrush = New-Object System.Windows.Media.SolidColorBrush
