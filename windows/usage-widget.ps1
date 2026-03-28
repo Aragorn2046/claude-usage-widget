@@ -610,14 +610,8 @@ $script:fontConsolas = New-Object System.Windows.Media.FontFamily("Consolas")
 
 # Helper: get the right font for element type based on current font pack
 function Get-WidgetFont([string]$role) {
-    # $role: "header" (bold labels), "data" (values/mono), "body" (detail text)
-    if ($script:fontPack -eq "Blueprint" -and $script:fontOrbitron) {
-        switch ($role) {
-            "header" { return $script:fontOrbitron }
-            "data"   { return $script:fontShareTech }
-            "body"   { return $script:fontShareTech }
-            default  { return $script:fontShareTech }
-        }
+    if ($script:fontPack -eq "Blueprint" -and $script:fontShareTech) {
+        return $script:fontShareTech
     }
     return $script:fontConsolas
 }
@@ -995,26 +989,17 @@ function Apply-FontToTree($element) {
         $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($element)
     } catch { return }
 
+    $targetFont = if ($script:fontPack -eq "Blueprint" -and $script:fontShareTech) {
+        $script:fontShareTech
+    } else {
+        $script:fontConsolas
+    }
+
     for ($i = 0; $i -lt $count; $i++) {
         $child = [System.Windows.Media.VisualTreeHelper]::GetChild($element, $i)
 
         if ($child -is [System.Windows.Controls.TextBlock]) {
-            if ($script:fontPack -eq "Blueprint" -and $script:fontOrbitron -and $script:fontShareTech) {
-                $isBold = ($child.FontWeight.ToString() -eq "Bold")
-                $size = $child.FontSize
-                if ($isBold -and $size -ge 22) {
-                    # Section headers: ANTHROPIC, 5H CYCLE, CPU, etc.
-                    $child.FontFamily = $script:fontOrbitron
-                } elseif ($isBold) {
-                    # Smaller bold items (percentages, bar labels)
-                    $child.FontFamily = $script:fontShareTech
-                } else {
-                    # Detail text, values
-                    $child.FontFamily = $script:fontShareTech
-                }
-            } else {
-                $child.FontFamily = $script:fontConsolas
-            }
+            $child.FontFamily = $targetFont
         }
 
         Apply-FontToTree $child
