@@ -26,6 +26,66 @@ if ($args -notcontains '-Detached') {
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 
+# ── Win32 Acrylic Blur API ───────────────────────────────────────────────────
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public class AcrylicHelper {
+    [DllImport("user32.dll")]
+    internal static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WindowCompositionAttributeData {
+        public int Attribute;
+        public IntPtr Data;
+        public int SizeOfData;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct AccentPolicy {
+        public int AccentState;
+        public int AccentFlags;
+        public uint GradientColor;  // AABBGGRR
+        public int AnimationId;
+    }
+
+    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha) {
+        var accent = new AccentPolicy();
+        accent.AccentState = 4;  // ACCENT_ENABLE_ACRYLICBLURBEHIND
+        accent.AccentFlags = 2;  // ACCENT_FLAG_DRAW_ALL
+        accent.GradientColor = ((uint)alpha << 24) | ((uint)b << 16) | ((uint)g << 8) | (uint)r;
+
+        var data = new WindowCompositionAttributeData();
+        data.Attribute = 19;  // WCA_ACCENT_POLICY
+        int accentSize = Marshal.SizeOf(accent);
+        IntPtr accentPtr = Marshal.AllocHGlobal(accentSize);
+        Marshal.StructureToPtr(accent, accentPtr, false);
+        data.Data = accentPtr;
+        data.SizeOfData = accentSize;
+
+        SetWindowCompositionAttribute(hwnd, ref data);
+        Marshal.FreeHGlobal(accentPtr);
+    }
+
+    public static void DisableAcrylic(IntPtr hwnd) {
+        var accent = new AccentPolicy();
+        accent.AccentState = 0;  // ACCENT_DISABLED
+
+        var data = new WindowCompositionAttributeData();
+        data.Attribute = 19;
+        int accentSize = Marshal.SizeOf(accent);
+        IntPtr accentPtr = Marshal.AllocHGlobal(accentSize);
+        Marshal.StructureToPtr(accent, accentPtr, false);
+        data.Data = accentPtr;
+        data.SizeOfData = accentSize;
+
+        SetWindowCompositionAttribute(hwnd, ref data);
+        Marshal.FreeHGlobal(accentPtr);
+    }
+}
+"@ -ReferencedAssemblies PresentationCore
+
 # ── Single-Instance Mutex ────────────────────────────────────────────────────
 $script:mutexName = "Global\ClaudeUsageWidget_SingleInstance"
 $script:mutexCreated = $false
@@ -158,7 +218,7 @@ function Load-Settings {
         UsageWarnPct = 50; UsageCritPct = 80
         TempWarnC = 60; TempCritC = 80
         PollIntervalSec = 180
-        Monochrome = $false; FontPack = "Consolas"
+        Monochrome = $false; FontPack = "Consolas"; AcrylicBlur = $false
     }
     if (Test-Path $script:settingsPath) {
         try {
@@ -193,6 +253,7 @@ function Save-Settings {
         PollIntervalSec = $script:pollIntervalSec
         Monochrome = $script:monochrome
         FontPack = $script:fontPack
+        AcrylicBlur = $script:acrylicBlur
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -617,6 +678,7 @@ $script:tempCritC     = $settings.TempCritC
 $script:pollIntervalSec = $settings.PollIntervalSec
 $script:monochrome    = $settings.Monochrome
 $script:fontPack      = $settings.FontPack
+$script:acrylicBlur   = $settings.AcrylicBlur
 # Backward compat: "Blueprint" was the old name for Share Tech Mono
 if ($script:fontPack -eq "Blueprint") { $script:fontPack = "Share Tech Mono" }
 
@@ -960,6 +1022,27 @@ function Apply-Appearance {
     try {
         foreach ($lbl in @($script:opacityValueLabel, $script:hueValueLabel, $script:usageWarnValueLabel, $script:usageCritValueLabel, $script:tempWarnValueLabel, $script:tempCritValueLabel, $script:pollValueLabel)) {
             if ($lbl) { $lbl.Foreground = $bc.ConvertFrom($accentColor) }
+        }
+    } catch {}
+
+    # ── Acrylic blur (Win32 DWM composition) ──
+    try {
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+        if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
+            if ($script:acrylicBlur) {
+                # Parse skin bg color for tint
+                $bgHex = Get-SkinBgHex
+                $r = [Convert]::ToByte($bgHex.Substring(0,2), 16)
+                $g = [Convert]::ToByte($bgHex.Substring(2,2), 16)
+                $b = [Convert]::ToByte($bgHex.Substring(4,2), 16)
+                # Use the opacity slider value for acrylic tint alpha
+                $acrylicAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $acrylicAlpha)
+                # Make WPF background transparent so Win32 acrylic shows through
+                $outerBorder.Background = $bc.ConvertFrom("#01000000")
+            } else {
+                [AcrylicHelper]::DisableAcrylic($hwnd)
+            }
         }
     } catch {}
 }
@@ -1691,6 +1774,17 @@ $monochromeMenuItem.Add_Click({
     Save-Settings
 })
 
+# Acrylic blur toggle
+$acrylicMenuItem = New-Object System.Windows.Controls.MenuItem
+$acrylicMenuItem.Header = if ($script:acrylicBlur) { "ACRYLIC: ON" } else { "ACRYLIC: OFF" }
+$acrylicMenuItem.Style = $ctxItemStyleObj
+$acrylicMenuItem.Add_Click({
+    $script:acrylicBlur = -not $script:acrylicBlur
+    $acrylicMenuItem.Header = if ($script:acrylicBlur) { "ACRYLIC: ON" } else { "ACRYLIC: OFF" }
+    Apply-Appearance
+    Save-Settings
+})
+
 # Font pack submenu — dynamically built from loaded font families
 $fontMenuItem = New-Object System.Windows.Controls.MenuItem
 $fontMenuItem.Style = $ctxItemStyleObj
@@ -1991,6 +2085,7 @@ $ctxMenu.Items.Add($hueMenuItem) | Out-Null
 $ctxMenu.Items.Add($borderMenuItem) | Out-Null
 $ctxMenu.Items.Add($retroMenuItem) | Out-Null
 $ctxMenu.Items.Add($monochromeMenuItem) | Out-Null
+$ctxMenu.Items.Add($acrylicMenuItem) | Out-Null
 $ctxMenu.Items.Add($fontMenuItem) | Out-Null
 $ctxMenu.Items.Add($elevenLabsMenuItem) | Out-Null
 $ctxMenu.Items.Add([System.Windows.Controls.Separator]::new()) | Out-Null
