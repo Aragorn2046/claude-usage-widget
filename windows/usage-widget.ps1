@@ -328,7 +328,7 @@ $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="520" Height="580" MinWidth="320" MinHeight="200"
-        WindowStyle="None"
+        WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Topmost="False"
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
         Left="20" Top="20">
@@ -989,9 +989,16 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $bgBase = Get-SkinBgHex
-    # Background: Win32 accent policy handles transparency at compositor level.
-    # WPF bg is transparent so the accent effect (acrylic or transparent gradient) shows through.
-    $outerBorder.Background = $bc.ConvertFrom("#00000000")
+    # Background opacity
+    $bgAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
+    $alphaHex = '{0:X2}' -f $bgAlpha
+    if ($script:acrylicBlur) {
+        # Acrylic ON: WPF bg transparent, Win32 accent policy handles appearance
+        $outerBorder.Background = $bc.ConvertFrom("#00000000")
+    } else {
+        # Acrylic OFF: WPF bg with alpha from slider
+        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
+    }
     # Border
     if ($script:showBorder) {
         $outerBorder.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
@@ -1087,21 +1094,19 @@ function Apply-Appearance {
         }
     } catch {}
 
-    # ── Win32 accent policy (handles ALL transparency without AllowsTransparency) ──
-    # Acrylic ON:  AccentState=4 — frosted blur + tinted overlay, alpha from slider
-    # Acrylic OFF: AccentState=2 — transparent gradient, alpha from slider
+    # ── Win32 accent policy (acrylic blur effect) ──
+    # Acrylic ON:  AccentState=3 (blur behind) — lighter frosted glass, alpha from slider
+    # Acrylic OFF: disable accent policy, WPF bg alpha handles transparency
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
-            $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
-            $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
-            $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
-            $bgAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
-
             if ($script:acrylicBlur) {
+                $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
+                $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
+                $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
                 [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $bgAlpha)
             } else {
-                [AcrylicHelper]::EnableTransparentGradient($hwnd, $r, $g, $b, $bgAlpha)
+                [AcrylicHelper]::DisableAcrylic($hwnd)
             }
         }
     } catch {}
@@ -2167,9 +2172,9 @@ $window.Add_MouseRightButtonDown({
 })
 $window.Add_Loaded({
     # ── DWM setup ──
-    # Without AllowsTransparency, Win32 accent policies (SetWindowCompositionAttribute)
-    # handle both acrylic blur and normal transparency at the compositor level.
-    # WPF content renders on top; transparent WPF areas show the accent effect.
+    # AllowsTransparency=True creates a layered window (WS_EX_LAYERED).
+    # Acrylic OFF: WPF bg alpha handles transparency directly.
+    # Acrylic ON: WPF bg transparent + legacy SetWindowCompositionAttribute for blur.
     $script:modernAcrylicSupported = $false
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
