@@ -617,24 +617,38 @@ $script:tempCritC     = $settings.TempCritC
 $script:pollIntervalSec = $settings.PollIntervalSec
 $script:monochrome    = $settings.Monochrome
 $script:fontPack      = $settings.FontPack
+# Backward compat: "Blueprint" was the old name for Share Tech Mono
+if ($script:fontPack -eq "Blueprint") { $script:fontPack = "Share Tech Mono" }
 
-# ── Load Blueprint font families from bundled TTF files ─────────────────────
+# ── Load font families from bundled TTF files ────────────────────────────────
 $script:fontsDir = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "fonts"
-$script:fontOrbitron     = $null
-$script:fontShareTech    = $null
-$script:fontRajdhani     = $null
+$script:fontFamilies = @{}
+$script:fontConsolas = New-Object System.Windows.Media.FontFamily("Consolas")
+$script:fontFamilies["Consolas"] = $script:fontConsolas
+
 if (Test-Path $script:fontsDir) {
     $fontsUri = "file:///" + ($script:fontsDir -replace '\\', '/')
-    $script:fontOrbitron  = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Orbitron")
-    $script:fontShareTech = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Share Tech Mono")
-    $script:fontRajdhani  = New-Object System.Windows.Media.FontFamily("${fontsUri}/#Rajdhani")
+    $fontDefs = @(
+        @{ Key = "Share Tech Mono"; Name = "Share Tech Mono" }
+        @{ Key = "Space Mono";      Name = "Space Mono" }
+        @{ Key = "JetBrains Mono";  Name = "JetBrains Mono" }
+        @{ Key = "Oxanium";         Name = "Oxanium" }
+        @{ Key = "Exo 2";           Name = "Exo 2" }
+        @{ Key = "Victor Mono";     Name = "Victor Mono" }
+        @{ Key = "Orbitron";        Name = "Orbitron" }
+        @{ Key = "Rajdhani";        Name = "Rajdhani" }
+    )
+    foreach ($fd in $fontDefs) {
+        try {
+            $script:fontFamilies[$fd.Key] = New-Object System.Windows.Media.FontFamily("${fontsUri}/#$($fd.Name)")
+        } catch {}
+    }
 }
-$script:fontConsolas = New-Object System.Windows.Media.FontFamily("Consolas")
 
-# Helper: get the right font for element type based on current font pack
+# Helper: get the current font family based on font pack setting
 function Get-WidgetFont([string]$role) {
-    if ($script:fontPack -eq "Blueprint" -and $script:fontShareTech) {
-        return $script:fontShareTech
+    if ($script:fontFamilies.ContainsKey($script:fontPack)) {
+        return $script:fontFamilies[$script:fontPack]
     }
     return $script:fontConsolas
 }
@@ -1012,11 +1026,7 @@ function Apply-FontToTree($element) {
         $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($element)
     } catch { return }
 
-    $targetFont = if ($script:fontPack -eq "Blueprint" -and $script:fontShareTech) {
-        $script:fontShareTech
-    } else {
-        $script:fontConsolas
-    }
+    $targetFont = Get-WidgetFont "data"
 
     for ($i = 0; $i -lt $count; $i++) {
         $child = [System.Windows.Media.VisualTreeHelper]::GetChild($element, $i)
@@ -1681,36 +1691,35 @@ $monochromeMenuItem.Add_Click({
     Save-Settings
 })
 
-# Font pack submenu
+# Font pack submenu — dynamically built from loaded font families
 $fontMenuItem = New-Object System.Windows.Controls.MenuItem
 $fontMenuItem.Style = $ctxItemStyleObj
 $fontMenuItem.Header = "FONT"
 $fontMenuItem.StaysOpenOnClick = $true
 
-$fontConsolasItem = New-Object System.Windows.Controls.MenuItem
-$fontConsolasItem.Style = $ctxItemStyleObj
-$fontConsolasItem.Header = if ($script:fontPack -eq "Consolas") { "* CONSOLAS" } else { "  CONSOLAS" }
-$fontConsolasItem.Add_Click({
-    $script:fontPack = "Consolas"
-    $fontConsolasItem.Header = "* CONSOLAS"
-    $fontBlueprintItem2.Header = "  BLUEPRINT"
-    Apply-Appearance
-    Save-Settings
-})
-
-$fontBlueprintItem2 = New-Object System.Windows.Controls.MenuItem
-$fontBlueprintItem2.Style = $ctxItemStyleObj
-$fontBlueprintItem2.Header = if ($script:fontPack -eq "Blueprint") { "* BLUEPRINT" } else { "  BLUEPRINT" }
-$fontBlueprintItem2.Add_Click({
-    $script:fontPack = "Blueprint"
-    $fontBlueprintItem2.Header = "* BLUEPRINT"
-    $fontConsolasItem.Header = "  CONSOLAS"
-    Apply-Appearance
-    Save-Settings
-})
-
-$fontMenuItem.Items.Add($fontConsolasItem) | Out-Null
-$fontMenuItem.Items.Add($fontBlueprintItem2) | Out-Null
+$script:fontMenuItems = @{}
+$fontOrder = @("Consolas", "Share Tech Mono", "Space Mono", "JetBrains Mono", "Oxanium", "Exo 2", "Victor Mono", "Orbitron", "Rajdhani")
+foreach ($fontKey in $fontOrder) {
+    if (-not $script:fontFamilies.ContainsKey($fontKey)) { continue }
+    $menuLabel = $fontKey.ToUpper()
+    $item = New-Object System.Windows.Controls.MenuItem
+    $item.Style = $ctxItemStyleObj
+    $item.Header = if ($script:fontPack -eq $fontKey) { "* $menuLabel" } else { "  $menuLabel" }
+    $item.Tag = $fontKey
+    $item.Add_Click({
+        param($sender, $e)
+        $selectedFont = $sender.Tag
+        $script:fontPack = $selectedFont
+        foreach ($k in @($script:fontMenuItems.Keys)) {
+            $lbl = $k.ToUpper()
+            $script:fontMenuItems[$k].Header = if ($k -eq $selectedFont) { "* $lbl" } else { "  $lbl" }
+        }
+        Apply-Appearance
+        Save-Settings
+    })
+    $script:fontMenuItems[$fontKey] = $item
+    $fontMenuItem.Items.Add($item) | Out-Null
+}
 
 # Skin submenu
 $skinMenuItem = New-Object System.Windows.Controls.MenuItem
