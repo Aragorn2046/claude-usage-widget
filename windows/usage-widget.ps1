@@ -1026,30 +1026,23 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
+    # Layering: Desktop → Acrylic blur → Acrylic tint → WPF background → Content
+    # The opacity slider controls the WPF background alpha, which sits ON TOP of
+    # the acrylic. Low opacity = blur visible, high opacity = solid over blur.
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
-            if ($script:acrylicBlur -and $script:bgOpacity -gt 0) {
-                # Parse skin bg color for tint
+            if ($script:acrylicBlur) {
+                # Parse skin bg color for acrylic tint
                 $bgHex = Get-SkinBgHex
                 $r = [Convert]::ToByte($bgHex.Substring(0,2), 16)
                 $g = [Convert]::ToByte($bgHex.Substring(2,2), 16)
                 $b = [Convert]::ToByte($bgHex.Substring(4,2), 16)
-                # Map opacity to acrylic tint alpha.
-                # The blur itself adds ~30-40% visual density, so we compress the
-                # tint range: opacity 1-100 → alpha 1-220 (never fully opaque,
-                # the blur fills the rest). This gives usable range across the
-                # whole slider instead of looking "full" at 50%.
-                $acrylicAlpha = [byte][math]::Min(220, [math]::Max(1, [math]::Round($script:bgOpacity * 220 / 100)))
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $acrylicAlpha)
-                # Make WPF background transparent so Win32 acrylic shows through
-                $outerBorder.Background = $bc.ConvertFrom("#00000000")
+                # Fixed low tint: just enough to color the frosted glass.
+                # The WPF background (line 932) handles opacity control.
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, [byte]50)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
-                # When acrylic off or opacity=0, restore normal WPF transparency
-                if ($script:bgOpacity -eq 0) {
-                    $outerBorder.Background = $bc.ConvertFrom("#00000000")
-                }
             }
         }
     } catch {}
