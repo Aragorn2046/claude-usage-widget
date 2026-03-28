@@ -926,15 +926,12 @@ function Get-SkinCardBg {
 function Apply-Appearance {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $bgBase = Get-SkinBgHex
-    # Background: when acrylic is OFF, WPF background handles opacity as normal.
-    # When acrylic is ON, WPF background = transparent; acrylic tint alpha = sole control.
-    if (-not $script:acrylicBlur) {
-        $alpha = [math]::Round($script:bgOpacity * 255 / 100)
-        $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
-        $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
-    } else {
-        $outerBorder.Background = $bc.ConvertFrom("#00000000")
-    }
+    # Background: opacity slider always controls WPF background transparency.
+    # When acrylic is ON, the frosted blur sits BEHIND the WPF background —
+    # low opacity = see through to acrylic blur, high opacity = solid over blur.
+    $alpha = [math]::Round($script:bgOpacity * 255 / 100)
+    $alphaHex = '{0:X2}' -f [int][math]::Min(255, [math]::Max(0, $alpha))
+    $outerBorder.Background = $bc.ConvertFrom("#${alphaHex}${bgBase}")
     # Border
     if ($script:showBorder) {
         $outerBorder.BorderBrush = $bc.ConvertFrom((Get-HueColor "#8830D158"))
@@ -1031,21 +1028,18 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
-    # Uses ACCENT_ENABLE_ACRYLICBLURBEHIND (AccentState=4).
-    # Opacity slider controls the tint alpha over the blur:
-    #   0% = no tint, pure frosted glass blur only
-    #   1-2% = barely-there tint, subtle acrylic (user's preferred setting)
-    #   50% = moderate tinted blur
-    #   100% = fully tinted (opaque)
+    # Acrylic blur is a constant frosted-glass layer BEHIND the WPF background.
+    # The opacity slider controls the WPF background on top — not the blur.
+    #   Opacity 0% + Acrylic ON = frosted glass, fully see-through to blur
+    #   Opacity 2% + Acrylic ON = subtle tinted frosted glass (user's preferred)
+    #   Opacity 100% + Acrylic ON = fully opaque, blur hidden beneath solid bg
     try {
         $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
         if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
             if ($script:acrylicBlur) {
-                $r = [Convert]::ToByte($bgBase.Substring(0,2), 16)
-                $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
-                $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
-                $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 4)
+                # Minimal tint (alpha=1) — the blur effect itself is the feature.
+                # WPF background layer above handles all opacity control.
+                [AcrylicHelper]::EnableAcrylic($hwnd, 0, 0, 0, [byte]1, 4)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
             }
