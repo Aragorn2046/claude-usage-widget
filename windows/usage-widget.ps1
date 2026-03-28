@@ -50,7 +50,7 @@ public class AcrylicHelper {
         public int AnimationId;
     }
 
-    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha, int accentState = 3) {
+    public static void EnableAcrylic(IntPtr hwnd, byte r, byte g, byte b, byte alpha, int accentState = 4) {
         var accent = new AccentPolicy();
         accent.AccentState = accentState;  // 3=BLURBEHIND (light), 4=ACRYLIC (heavy)
         accent.AccentFlags = 2;  // ACCENT_FLAG_DRAW_ALL
@@ -1031,9 +1031,10 @@ function Apply-Appearance {
     } catch {}
 
     # ── Acrylic blur (Win32 DWM composition) ──
-    # Uses ACCENT_ENABLE_BLURBEHIND (AccentState=3) — lighter than full acrylic (4).
-    # Opacity slider directly controls the tint alpha over the blur.
-    #   0% = no tint, subtle blur only
+    # Uses ACCENT_ENABLE_ACRYLICBLURBEHIND (AccentState=4).
+    # Opacity slider controls the tint alpha over the blur:
+    #   0% = no tint, pure frosted glass blur only
+    #   1-2% = barely-there tint, subtle acrylic (user's preferred setting)
     #   50% = moderate tinted blur
     #   100% = fully tinted (opaque)
     try {
@@ -1044,7 +1045,7 @@ function Apply-Appearance {
                 $g = [Convert]::ToByte($bgBase.Substring(2,2), 16)
                 $b = [Convert]::ToByte($bgBase.Substring(4,2), 16)
                 $tintAlpha = [byte][math]::Min(255, [math]::Max(0, [math]::Round($script:bgOpacity * 255 / 100)))
-                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 3)
+                [AcrylicHelper]::EnableAcrylic($hwnd, $r, $g, $b, $tintAlpha, 4)
             } else {
                 [AcrylicHelper]::DisableAcrylic($hwnd)
             }
