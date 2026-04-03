@@ -11,7 +11,8 @@ $credPath    = "$env:USERPROFILE\.claude\.credentials.json"
 $outFile5h   = "$PSScriptRoot\usage-5h.txt"
 $outFile7d   = "$PSScriptRoot\usage-7d.txt"
 $clientId    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-$intervalSec = 60
+$intervalSec = 180
+$backoffMultiplier = 1
 
 # ── Prevent duplicate instances ───────────────────────────────────────────────
 $mutex = [System.Threading.Mutex]::new($false, "Global\ClaudeUsageMonitor")
@@ -104,9 +105,15 @@ try {
                         Start-Sleep $intervalSec
                         continue
                     }
+                } elseif ($_.Exception.Response.StatusCode.value__ -eq 429) {
+                    $backoffMultiplier = [math]::Min($backoffMultiplier * 2, 4)
+                    Write-Both "429" "429"
+                    Start-Sleep ([math]::Round($intervalSec * $backoffMultiplier))
+                    continue
                 } else { throw }
             }
 
+            $backoffMultiplier = 1
             $pct5h = [math]::Round($resp.five_hour.utilization, 0)
             $pct7d = [math]::Round($resp.seven_day.utilization, 0)
             Write-Both "$pct5h%" "$pct7d%"
@@ -115,7 +122,7 @@ try {
             Write-Both "ERR" "ERR"
         }
 
-        Start-Sleep $intervalSec
+        Start-Sleep ([math]::Round($intervalSec * $backoffMultiplier))
     }
 } finally {
     $mutex.ReleaseMutex()

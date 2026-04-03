@@ -232,7 +232,10 @@ function Get-UsageData {
                 catch { return @{ error = "NEEDS LOGIN"; sub = $tokenInfo.sub } }
             } else { return @{ error = "NEEDS LOGIN"; sub = $tokenInfo.sub } }
         } elseif ($sc -eq 429) {
-            return @{ error = "RATE LIMITED"; sub = $tokenInfo.sub }
+            $script:backoffMultiplier = [math]::Min($script:backoffMultiplier * 2, 4)
+            $retryAfter = 0
+            try { $retryAfter = [int]$_.Exception.Response.Headers["Retry-After"] } catch {}
+            return @{ error = "RATE LIMITED"; sub = $tokenInfo.sub; retryAfter = $retryAfter }
         } else { return @{ error = "LINK FAILURE"; sub = $tokenInfo.sub } }
     }
     try {
@@ -1191,6 +1194,8 @@ function Apply-FontToTree($element) {
 $script:alertSoundPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "outage-alert.mp3"
 $script:prevOutage = @{ ai = "operational"; platform = "operational"; api = "operational"; code = "operational" }
 $script:lastGoodUsage = $null
+$script:backoffMultiplier = 1
+$script:pollJitter = Get-Random -Minimum 0 -Maximum 30
 $script:alertPlayer = New-Object System.Windows.Media.MediaPlayer
 
 function Get-WYColor($pct) {
@@ -1567,7 +1572,7 @@ function Update-Widget($preUsage, $preOutage) {
         if ($script:lastGoodUsage) {
             $displayData = $script:lastGoodUsage
             $statusDot.Background  = $bc.ConvertFrom("#D1A830")
-            $statusText.Text = "RETRYING"
+            $statusText.Text = if ($script:backoffMultiplier -gt 1) { "BACKOFF ${script:backoffMultiplier}x" } else { "RETRYING" }
             $statusText.Foreground = $bc.ConvertFrom("#AAD1A830")
             $errorLabel.Visibility = "Collapsed"
         } else {
@@ -1580,6 +1585,7 @@ function Update-Widget($preUsage, $preOutage) {
     } else {
         $displayData = $data
         $script:lastGoodUsage = $data
+        $script:backoffMultiplier = 1
         $errorLabel.Visibility = "Collapsed"
         $statusDot.Background  = $bc.ConvertFrom((Get-HueColor "#30D158"))
         $statusText.Text = "LINK ACTIVE"
@@ -2377,7 +2383,9 @@ try {
             catch { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
         } else { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
     } elseif ($sc -eq 429) {
-        $usageData = @{ error = "RATE LIMITED"; sub = $subType }
+        $retryAfter = 0
+        try { $retryAfter = [int]$_.Exception.Response.Headers["Retry-After"] } catch {}
+        $usageData = @{ error = "RATE LIMITED"; sub = $subType; retryAfter = $retryAfter }
     } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
 }
 if (-not $usageData) {
@@ -2489,6 +2497,9 @@ $pollTimer.Add_Tick({
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
                 Update-Widget $result[0].usage $result[0].outage
+                if ($result[0].usage.error -eq "RATE LIMITED") {
+                    $script:backoffMultiplier = [math]::Min($script:backoffMultiplier * 2, 4)
+                }
             }
         } catch {} finally {
             $script:usageJob.PS.Dispose()
@@ -2530,7 +2541,8 @@ $pollTimer.Add_Tick({
 
     # Start usage+outage job every N seconds (configurable, min 60s)
     # NOTE: The usage API has aggressive rate limiting. Do NOT set below 60s.
-    if ($script:usageTicks -ge $script:pollIntervalSec -and -not $script:usageJob) {
+    $effectivePoll = [math]::Round($script:pollIntervalSec * $script:backoffMultiplier + $script:pollJitter)
+    if ($script:usageTicks -ge $effectivePoll -and -not $script:usageJob) {
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
