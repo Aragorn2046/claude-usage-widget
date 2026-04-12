@@ -205,6 +205,17 @@ function Get-Token {
 }
 
 function Fetch-Usage($accessToken) {
+    # Try proxy first (shared cache on Day — eliminates concurrent 429s from Dawn/Dusk/EMOC)
+    if ($script:usageProxyUrl) {
+        try {
+            $resp = Invoke-RestMethod -Uri $script:usageProxyUrl -Method GET -TimeoutSec 5 -ErrorAction Stop
+            # Proxy returns raw Anthropic data — verify it has expected shape
+            if ($resp.five_hour -or $resp.seven_day) { return $resp }
+        } catch {
+            # Proxy unavailable (Day offline, network issue) — fall through to direct
+        }
+    }
+    # Direct Anthropic call (fallback or proxy disabled)
     $headers = @{
         "Authorization"  = "Bearer $accessToken"
         "anthropic-beta" = "oauth-2025-04-20"
@@ -285,6 +296,10 @@ function Load-Settings {
         TempWarnC = 60; TempCritC = 80
         PollIntervalSec = 180
         Monochrome = $false; FontPack = "Consolas"; AcrylicBlur = $false
+        # Proxy: route usage API calls through Day's EMOC server to share its 300s
+        # cache across Dawn, Dusk, and EMOC itself — prevents concurrent 429s.
+        # Set to $null or "" to disable and call Anthropic directly.
+        UsageProxyUrl = "http://100.96.47.104:7171/api/usage/raw"
     }
     if (Test-Path $script:settingsPath) {
         try {
@@ -320,6 +335,7 @@ function Save-Settings {
         Monochrome = $script:monochrome
         FontPack = $script:fontPack
         AcrylicBlur = $script:acrylicBlur
+        UsageProxyUrl = $script:usageProxyUrl
     }
     $s | ConvertTo-Json | Set-Content $script:settingsPath -Encoding UTF8
 }
@@ -745,6 +761,7 @@ $script:pollIntervalSec = $settings.PollIntervalSec
 $script:monochrome    = $settings.Monochrome
 $script:fontPack      = $settings.FontPack
 $script:acrylicBlur   = $settings.AcrylicBlur
+$script:usageProxyUrl = $settings.UsageProxyUrl
 # Backward compat: "Blueprint" was the old name for Share Tech Mono
 if ($script:fontPack -eq "Blueprint") { $script:fontPack = "Share Tech Mono" }
 
@@ -2347,7 +2364,7 @@ return $metrics
 
 # Self-contained script for usage + outage (runs in background runspace)
 $script:usageOutageScript = @'
-param($credPath, $clientId, $wslCredPath)
+param($credPath, $clientId, $wslCredPath, $usageProxyUrl)
 # Sync WSL credentials if newer
 if ($wslCredPath -and (Test-Path $wslCredPath)) {
     $wslTime = (Get-Item $wslCredPath).LastWriteTimeUtc
@@ -2356,37 +2373,69 @@ if ($wslCredPath -and (Test-Path $wslCredPath)) {
     }
 }
 $unknownOutage = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
-if (-not (Test-Path $credPath)) {
-    return @{ usage = @{ error = "NO CREDENTIALS FOUND"; sub = "UNKNOWN" }; outage = $unknownOutage }
-}
-$creds = Get-Content $credPath -Raw | ConvertFrom-Json
-$token = $creds.claudeAiOauth.accessToken
-$subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.subscriptionType } else { "UNKNOWN" }
-if (-not $token) {
-    return @{ usage = @{ error = "NO TOKEN"; sub = $subType }; outage = $unknownOutage }
-}
-$headers = @{ "Authorization" = "Bearer $token"; "anthropic-beta" = "oauth-2025-04-20"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
 $usageData = $null
-try {
-    $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
-} catch {
-    $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
-    if ($sc -eq 401) {
-        # Re-read file in case Claude Code refreshed the token
-        if ($wslCredPath -and (Test-Path $wslCredPath)) {
-            try { Copy-Item $wslCredPath $credPath -Force } catch {}
+
+# Try proxy first — Day's EMOC server caches usage for 300s, shared across all consumers
+if ($usageProxyUrl) {
+    try {
+        $proxyResp = Invoke-RestMethod -Uri $usageProxyUrl -Method GET -TimeoutSec 5 -ErrorAction Stop
+        if ($proxyResp.five_hour -or $proxyResp.seven_day) {
+            # Proxy returned valid usage data — parse and return
+            $subType = if ($proxyResp.subscription) { $proxyResp.subscription } else { "UNKNOWN" }
+            $now = [DateTime]::Now
+            $fiveHourPct = [math]::Round($proxyResp.five_hour.utilization, 1)
+            $sevenDayPct = [math]::Round($proxyResp.seven_day.utilization, 1)
+            $fiveReset = [DateTimeOffset]::Parse($proxyResp.five_hour.resets_at).LocalDateTime
+            $fiveDiff = $fiveReset - $now
+            $fiveResetStr = if ($fiveDiff.TotalSeconds -le 0) { "NOW" } elseif ($fiveDiff.TotalMinutes -lt 60) { "$([math]::Round($fiveDiff.TotalMinutes))M" } else { "$([math]::Round($fiveDiff.TotalHours, 1))H" }
+            $sevenResetStr = ""
+            if ($proxyResp.seven_day) {
+                $sevenReset = [DateTimeOffset]::Parse($proxyResp.seven_day.resets_at).LocalDateTime
+                $sevenDiff = $sevenReset - $now
+                $sevenResetStr = if ($sevenDiff.TotalSeconds -le 0) { "NOW" } elseif ($sevenDiff.TotalMinutes -lt 60) { "$([math]::Round($sevenDiff.TotalMinutes))M" } elseif ($sevenDiff.TotalHours -lt 24) { "$([math]::Round($sevenDiff.TotalHours, 1))H" } else { "$([math]::Round($sevenDiff.TotalDays, 1))D" }
+            }
+            $sevenSonnetPct = 0
+            if ($proxyResp.seven_day_sonnet) { $sevenSonnetPct = [math]::Round($proxyResp.seven_day_sonnet.utilization, 1) }
+            $usageData = @{ error = $null; sub = $subType; fivePct = $fiveHourPct; sevenPct = $sevenDayPct; fiveReset = $fiveResetStr; sevenReset = $sevenResetStr; sevenSonnetPct = $sevenSonnetPct; _source = "proxy" }
         }
-        $creds2 = Get-Content $credPath -Raw | ConvertFrom-Json
-        if ($creds2.claudeAiOauth.accessToken -ne $token) {
-            $headers["Authorization"] = "Bearer $($creds2.claudeAiOauth.accessToken)"
-            try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
-            catch { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
-        } else { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
-    } elseif ($sc -eq 429) {
-        $retryAfter = 0
-        try { $retryAfter = [int]$_.Exception.Response.Headers["Retry-After"] } catch {}
-        $usageData = @{ error = "RATE LIMITED"; sub = $subType; retryAfter = $retryAfter }
-    } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
+    } catch {
+        # Proxy unavailable — fall through to direct Anthropic call
+    }
+}
+
+# Direct Anthropic call (proxy disabled, unavailable, or returned bad data)
+if (-not $usageData) {
+    if (-not (Test-Path $credPath)) {
+        return @{ usage = @{ error = "NO CREDENTIALS FOUND"; sub = "UNKNOWN" }; outage = $unknownOutage }
+    }
+    $creds = Get-Content $credPath -Raw | ConvertFrom-Json
+    $token = $creds.claudeAiOauth.accessToken
+    $subType = if ($creds.claudeAiOauth.subscriptionType) { $creds.claudeAiOauth.subscriptionType } else { "UNKNOWN" }
+    if (-not $token) {
+        return @{ usage = @{ error = "NO TOKEN"; sub = $subType }; outage = $unknownOutage }
+    }
+    $headers = @{ "Authorization" = "Bearer $token"; "anthropic-beta" = "oauth-2025-04-20"; "Accept" = "application/json"; "User-Agent" = "claude-usage-widget/1.0" }
+    try {
+        $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
+    } catch {
+        $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+        if ($sc -eq 401) {
+            # Re-read file in case Claude Code refreshed the token
+            if ($wslCredPath -and (Test-Path $wslCredPath)) {
+                try { Copy-Item $wslCredPath $credPath -Force } catch {}
+            }
+            $creds2 = Get-Content $credPath -Raw | ConvertFrom-Json
+            if ($creds2.claudeAiOauth.accessToken -ne $token) {
+                $headers["Authorization"] = "Bearer $($creds2.claudeAiOauth.accessToken)"
+                try { $resp = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop }
+                catch { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
+            } else { $usageData = @{ error = "NEEDS LOGIN"; sub = $subType } }
+        } elseif ($sc -eq 429) {
+            $retryAfter = 0
+            try { $retryAfter = [int]$_.Exception.Response.Headers["Retry-After"] } catch {}
+            $usageData = @{ error = "RATE LIMITED"; sub = $subType; retryAfter = $retryAfter }
+        } else { $usageData = @{ error = "LINK FAILURE"; sub = $subType } }
+    }
 }
 if (-not $usageData) {
     try {
@@ -2546,7 +2595,7 @@ $pollTimer.Add_Tick({
         $script:usageTicks = 0
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $runspacePool
-        $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId).AddArgument($wslCredPath) | Out-Null
+        $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId).AddArgument($wslCredPath).AddArgument($script:usageProxyUrl) | Out-Null
         $script:usageJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
 })
