@@ -206,13 +206,20 @@ function Get-Token {
 
 function Fetch-Usage($accessToken) {
     # Try proxy first (shared cache on Day — eliminates concurrent 429s from Dawn/Dusk/EMOC)
+    # Proxy added Bearer auth on 2026-04-19 (server commit ea1e08b); token at $USERPROFILE\.claude-usage\token.
     if ($script:usageProxyUrl) {
         try {
-            $resp = Invoke-RestMethod -Uri $script:usageProxyUrl -Method GET -TimeoutSec 5 -ErrorAction Stop
+            $proxyHeaders = @{}
+            $proxyTokenPath = Join-Path $env:USERPROFILE ".claude-usage\token"
+            if (Test-Path $proxyTokenPath) {
+                $pt = (Get-Content $proxyTokenPath -Raw -ErrorAction Stop).Trim()
+                if ($pt) { $proxyHeaders["Authorization"] = "Bearer $pt" }
+            }
+            $resp = Invoke-RestMethod -Uri $script:usageProxyUrl -Headers $proxyHeaders -Method GET -TimeoutSec 5 -ErrorAction Stop
             # Proxy returns raw Anthropic data — verify it has expected shape
             if ($resp.five_hour -or $resp.seven_day) { return $resp }
         } catch {
-            # Proxy unavailable (Day offline, network issue) — fall through to direct
+            # Proxy unavailable (Day offline, network, or token misconfigured) — fall through to direct
         }
     }
     # Direct Anthropic call (fallback or proxy disabled)
