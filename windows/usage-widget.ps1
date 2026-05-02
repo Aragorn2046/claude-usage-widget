@@ -205,24 +205,39 @@ function Get-Token {
 }
 
 function Fetch-Usage($accessToken) {
-    # Try proxy first (shared cache on Day — eliminates concurrent 429s from Dawn/Dusk/EMOC)
-    # Proxy added Bearer auth on 2026-04-19 (server commit ea1e08b); token at $USERPROFILE\.claude-usage\token.
+    # STRICT-PROXY mode (cycle 2026-04-30 tracker-accuracy-and-codex-tracking):
+    # When usageProxyUrl is set, ONLY use the proxy. No silent fallthrough to direct
+    # Anthropic — that's what was causing "Backoff 4x and retrying" (proxy hiccup
+    # → silent catch → direct call → 429). On any proxy failure, throw, and the
+    # caller surfaces "DAY OFFLINE" instead of burning Anthropic quota.
     if ($script:usageProxyUrl) {
+        $proxyHeaders = @{}
+        $proxyTokenPath = Join-Path $env:USERPROFILE ".claude-usage\token"
+        if (Test-Path $proxyTokenPath) {
+            $pt = (Get-Content $proxyTokenPath -Raw -ErrorAction Stop).Trim()
+            if ($pt) { $proxyHeaders["Authorization"] = "Bearer $pt" }
+        }
+        $t0 = Get-Date
         try {
-            $proxyHeaders = @{}
-            $proxyTokenPath = Join-Path $env:USERPROFILE ".claude-usage\token"
-            if (Test-Path $proxyTokenPath) {
-                $pt = (Get-Content $proxyTokenPath -Raw -ErrorAction Stop).Trim()
-                if ($pt) { $proxyHeaders["Authorization"] = "Bearer $pt" }
-            }
             $resp = Invoke-RestMethod -Uri $script:usageProxyUrl -Headers $proxyHeaders -Method GET -TimeoutSec 5 -ErrorAction Stop
-            # Proxy returns raw Anthropic data — verify it has expected shape
+            $script:lastProxyMs = [int]((Get-Date) - $t0).TotalMilliseconds
+            $script:lastProxyStatus = 200
+            $script:lastProxyError = $null
             if ($resp.five_hour -or $resp.seven_day) { return $resp }
+            $script:lastProxyError = "PROXY: invalid shape"
+            throw [System.Exception]::new($script:lastProxyError)
         } catch {
-            # Proxy unavailable (Day offline, network, or token misconfigured) — fall through to direct
+            $script:lastProxyMs = [int]((Get-Date) - $t0).TotalMilliseconds
+            $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+            $script:lastProxyStatus = $sc
+            $msg = $_.Exception.Message
+            if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+            $script:lastProxyError = "PROXY $sc`: $msg"
+            # Strict mode — re-throw, no direct Anthropic fallback
+            throw
         }
     }
-    # Direct Anthropic call (fallback or proxy disabled)
+    # Legacy path: only used if no usageProxyUrl is configured at all (off-network)
     $headers = @{
         "Authorization"  = "Bearer $accessToken"
         "anthropic-beta" = "oauth-2025-04-20"
@@ -234,6 +249,34 @@ function Fetch-Usage($accessToken) {
         -Headers $headers -Method GET -TimeoutSec 15 -ErrorAction Stop
 }
 
+function Send-Heartbeat($data) {
+    # Best-effort POST to /api/widget/heartbeat. Never blocks the widget loop.
+    if (-not $script:usageProxyUrl) { return }
+    try {
+        $base = ($script:usageProxyUrl -replace '/api/usage/.*$', '')
+        $url = "$base/api/widget/heartbeat"
+        $headers = @{ "Content-Type" = "application/json" }
+        $proxyTokenPath = Join-Path $env:USERPROFILE ".claude-usage\token"
+        if (Test-Path $proxyTokenPath) {
+            $pt = (Get-Content $proxyTokenPath -Raw -ErrorAction Stop).Trim()
+            if ($pt) { $headers["Authorization"] = "Bearer $pt" }
+        }
+        $body = @{
+            machine           = $env:COMPUTERNAME
+            version           = "ps1-2026-04-30-strict"
+            last_proxy_ok     = ($script:lastProxyStatus -eq 200)
+            last_proxy_status = $script:lastProxyStatus
+            last_proxy_error  = $script:lastProxyError
+            last_fetch_ms     = $script:lastProxyMs
+            displayed_5h      = $data.fivePct
+            displayed_7d      = $data.sevenPct
+        } | ConvertTo-Json -Depth 3
+        Invoke-RestMethod -Uri $url -Method POST -Body $body -Headers $headers -TimeoutSec 5 -ErrorAction Stop | Out-Null
+    } catch {
+        # Heartbeat best-effort — never block widget on its failure
+    }
+}
+
 function Get-UsageData {
     $tokenInfo = Get-Token
     if ($tokenInfo.error) { return @{ error = $tokenInfo.error; sub = $tokenInfo.sub } }
@@ -241,6 +284,14 @@ function Get-UsageData {
         $resp = Fetch-Usage $tokenInfo.token
     } catch {
         $sc = 0; try { $sc = $_.Exception.Response.StatusCode.value__ } catch {}
+        # Strict-proxy mode (cycle 2026-04-30): Fetch-Usage stores the last proxy
+        # status code in $script:lastProxyStatus. If it's set, the failure came
+        # from the proxy, not direct Anthropic. Surface "DAY OFFLINE" rather than
+        # mapping into the legacy 401/429 ladder (those don't apply when the path
+        # is proxy-only).
+        if ($script:usageProxyUrl -and $script:lastProxyStatus -ne 200) {
+            return @{ error = "DAY OFFLINE"; sub = $tokenInfo.sub; proxyStatus = $script:lastProxyStatus }
+        }
         if ($sc -eq 401) {
             # Token invalid — re-read file in case Claude Code refreshed it
             Sync-WslCreds
@@ -1581,6 +1632,10 @@ function Update-ElevenLabs($preData) {
 function Update-Widget($preUsage, $preOutage) {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $data = if ($preUsage) { $preUsage } else { Get-UsageData }
+
+    # Heartbeat to Day proxy — best-effort, never blocks. Carries diagnostic state
+    # (last_proxy_status, last_proxy_error, displayed pcts) for EMOC visibility.
+    Send-Heartbeat $data
 
     $subDisplay = switch -Wildcard ($data.sub.ToLower()) {
         "*max*"  { "MAX" }
