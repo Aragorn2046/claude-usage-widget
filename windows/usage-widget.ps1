@@ -251,7 +251,12 @@ function Fetch-Usage($accessToken) {
 
 function Send-Heartbeat($data) {
     # Best-effort POST to /api/widget/heartbeat. Never blocks the widget loop.
-    if (-not $script:usageProxyUrl) { return }
+    $base = $null
+    if ($script:heartbeatUrl) {
+        $base = ($script:heartbeatUrl -replace "/api/widget/heartbeat$", "")
+    } elseif ($script:usageProxyUrl) {
+        $base = ($script:usageProxyUrl -replace "/api/usage/.*$", "")
+    } else { return }
     try {
         $base = ($script:usageProxyUrl -replace '/api/usage/.*$', '')
         $url = "$base/api/widget/heartbeat"
@@ -820,6 +825,7 @@ $script:monochrome    = $settings.Monochrome
 $script:fontPack      = $settings.FontPack
 $script:acrylicBlur   = $settings.AcrylicBlur
 $script:usageProxyUrl = $settings.UsageProxyUrl
+    $script:heartbeatUrl = $settings.HeartbeatUrl
 # Backward compat: "Blueprint" was the old name for Share Tech Mono
 if ($script:fontPack -eq "Blueprint") { $script:fontPack = "Share Tech Mono" }
 
