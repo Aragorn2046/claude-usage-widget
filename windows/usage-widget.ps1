@@ -11,16 +11,54 @@
 
 #Requires -Version 5.1
 
-# ── Auto-Detach from Terminal ────────────────────────────────────────────────
+# ── Auto-Detach from Terminal + P0 Watchdog ──────────────────────────────────
 # If launched from a terminal (interactive session), re-launch as a detached
 # process so the widget survives terminal closure. The -Detached flag prevents
 # infinite re-launch loops.
+#
+# P0 RestartOnFailure: The parent process stays alive as a lightweight watchdog.
+# If the widget child exits with non-zero (crash), the watchdog restarts it
+# up to $maxRestarts times within a rolling window. Clean exits (ESC, Close)
+# use exit code 0 and stop the loop.
 if ($args -notcontains '-Detached') {
     $scriptPath = $MyInvocation.MyCommand.Path
     if ($scriptPath) {
-        Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Detached" -WindowStyle Hidden
+        $maxRestarts = 5
+        $restartCount = 0
+        $crashLog = Join-Path (Split-Path -Parent $scriptPath) "crash.log"
+
+        do {
+            $proc = Start-Process powershell.exe `
+                -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Detached" `
+                -WindowStyle Hidden -PassThru
+            $proc.WaitForExit()
+
+            if ($proc.ExitCode -eq 0) { break }
+
+            $restartCount++
+            $entry = "$(Get-Date -Format 'o')|WATCHDOG|restart $restartCount/$maxRestarts|exit=$($proc.ExitCode)"
+            try { Add-Content $crashLog $entry -ErrorAction SilentlyContinue } catch {}
+            Start-Sleep -Seconds 3
+        } while ($restartCount -lt $maxRestarts)
+
         exit 0
     }
+}
+
+# ── P0: Crash trap (runs in the -Detached child) ─────────────────────────────
+# Catches unhandled terminating errors, logs them, releases the mutex, and
+# exits with code 1 so the watchdog parent knows to restart.
+$script:_crashLogPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "crash.log"
+trap {
+    $msg = $_.Exception.Message -replace '[\r\n]+',' '
+    if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) }
+    $entry = "$(Get-Date -Format 'o')|CRASH|$msg"
+    try { Add-Content $script:_crashLogPath $entry -ErrorAction SilentlyContinue } catch {}
+    if ($script:widgetMutex) {
+        try { $script:widgetMutex.ReleaseMutex() } catch {}
+        try { $script:widgetMutex.Dispose() } catch {}
+    }
+    exit 1
 }
 
 Add-Type -AssemblyName PresentationFramework
@@ -281,6 +319,37 @@ function Send-Heartbeat($data) {
         # Heartbeat best-effort — never block widget on its failure
     }
 }
+
+# ── P1: Toast Notifications ──────────────────────────────────────────────────
+# Lightweight Windows 10/11 toast notifications via WinRT. No external modules.
+# Falls back silently if WinRT classes are unavailable (e.g., Server Core).
+$script:_toastAvailable = $null
+function Show-Toast($title, $body) {
+    if ($script:_toastAvailable -eq $false) { return }
+    try {
+        if ($null -eq $script:_toastAvailable) {
+            [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+            [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
+            $script:_toastAvailable = $true
+        }
+        $safeTitle = [System.Security.SecurityElement]::Escape($title)
+        $safeBody  = [System.Security.SecurityElement]::Escape($body)
+        $xmlStr = "<toast><visual><binding template=`"ToastGeneric`"><text>$safeTitle</text><text>$safeBody</text></binding></visual></toast>"
+        $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
+        $xml.LoadXml($xmlStr)
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Claude Usage Widget").Show($toast)
+    } catch {
+        $script:_toastAvailable = $false
+    }
+}
+
+# ── P1: Heartbeat Watchdog State ─────────────────────────────────────────────
+$script:lastDataUpdateTime = Get-Date
+$script:watchdogTimeoutSec = 600
+$script:watchdogTriggered = $false
+$script:prevToastFivePct = 0
+$script:prevToastSevenPct = 0
 
 function Get-UsageData {
     $tokenInfo = Get-Token
@@ -1703,6 +1772,23 @@ function Update-Widget($preUsage, $preOutage) {
         $sonnetBar.Width        = [math]::Max(0, [math]::Round($barMaxWidth * [math]::Min($sonnetPct, 100) / 100))
         $sonnetLabel.Text       = "$sonnetPct%"
         $sonnetLabel.Foreground = $bc.ConvertFrom("#9930D158")
+
+        # ── P1: Toast on threshold crossing (rising edge only) ──
+        $warnPct = $script:usageWarnPct; $critPct = $script:usageCritPct
+        $fp = $displayData.fivePct; $sp = $displayData.sevenPct
+        $pfp = $script:prevToastFivePct; $psp = $script:prevToastSevenPct
+        if ($fp -ge $critPct -and $pfp -lt $critPct) {
+            Show-Toast "Claude Usage CRITICAL" "5-hour usage at ${fp}% (threshold: ${critPct}%)"
+        } elseif ($fp -ge $warnPct -and $pfp -lt $warnPct) {
+            Show-Toast "Claude Usage Warning" "5-hour usage at ${fp}% (threshold: ${warnPct}%)"
+        }
+        if ($sp -ge $critPct -and $psp -lt $critPct) {
+            Show-Toast "Claude Usage CRITICAL" "7-day usage at ${sp}% (threshold: ${critPct}%)"
+        } elseif ($sp -ge $warnPct -and $psp -lt $warnPct) {
+            Show-Toast "Claude Usage Warning" "7-day usage at ${sp}% (threshold: ${warnPct}%)"
+        }
+        $script:prevToastFivePct = $fp
+        $script:prevToastSevenPct = $sp
     }
 
     # ── Outage Status ──
@@ -1723,10 +1809,18 @@ function Update-Widget($preUsage, $preOutage) {
         }
     }
     $script:prevOutage = $outage
-    if ($newOutage -and (Test-Path $script:alertSoundPath)) {
-        $script:alertPlayer.Open([Uri]::new($script:alertSoundPath))
-        $script:alertPlayer.Volume = 1.0
-        $script:alertPlayer.Play()
+    if ($newOutage) {
+        if (Test-Path $script:alertSoundPath) {
+            $script:alertPlayer.Open([Uri]::new($script:alertSoundPath))
+            $script:alertPlayer.Volume = 1.0
+            $script:alertPlayer.Play()
+        }
+        # P1: Toast for service outage
+        $affectedSvc = @()
+        foreach ($k in @("ai", "platform", "api", "code")) {
+            if ($outage[$k] -in $badStates) { $affectedSvc += $k.ToUpper() }
+        }
+        Show-Toast "Claude Service Outage" "Degraded: $($affectedSvc -join ', ')"
     }
 }
 
@@ -2274,6 +2368,14 @@ $window.Add_Loaded({
         }
     } catch {}
 
+    # P0/P1: Notify user if this is a restart (crash.log updated within last 15s)
+    if (Test-Path $script:_crashLogPath) {
+        $logAge = ((Get-Date) - (Get-Item $script:_crashLogPath).LastWriteTime).TotalSeconds
+        if ($logAge -lt 15) {
+            Show-Toast "Claude Widget Restarted" "Widget recovered from a crash and restarted automatically."
+        }
+    }
+
     Apply-LockState
     Apply-Appearance
     $window.Topmost = $script:topmost
@@ -2614,6 +2716,7 @@ $pollTimer.Add_Tick({
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
                 Update-Widget $result[0].usage $result[0].outage
+                $script:lastDataUpdateTime = Get-Date
                 if ($result[0].usage.error -eq "RATE LIMITED") {
                     $script:backoffMultiplier = [math]::Min($script:backoffMultiplier * 2, 4)
                 }
@@ -2666,6 +2769,16 @@ $pollTimer.Add_Tick({
         $ps.AddScript($script:usageOutageScript).AddArgument($credPath).AddArgument($clientId).AddArgument($wslCredPath).AddArgument($script:usageProxyUrl) | Out-Null
         $script:usageJob = @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
+
+    # ── P1: Heartbeat watchdog — detect hung widget ──
+    $dataAge = ((Get-Date) - $script:lastDataUpdateTime).TotalSeconds
+    if ($dataAge -gt $script:watchdogTimeoutSec) {
+        $wdMsg = "No data update for $([math]::Round($dataAge / 60))min"
+        try { Add-Content $script:_crashLogPath "$(Get-Date -Format 'o')|WATCHDOG_HUNG|$wdMsg" -ErrorAction SilentlyContinue } catch {}
+        Show-Toast "Claude Widget Watchdog" ($wdMsg + " - restarting widget")
+        $script:watchdogTriggered = $true
+        $window.Close()
+    }
 })
 $pollTimer.Start()
 
@@ -2693,3 +2806,7 @@ if ($script:widgetMutex) {
     try { $script:widgetMutex.ReleaseMutex() } catch {}
     $script:widgetMutex.Dispose()
 }
+
+# P0: Signal exit code to watchdog (0=clean, 1=watchdog-triggered restart)
+if ($script:watchdogTriggered) { exit 1 }
+exit 0

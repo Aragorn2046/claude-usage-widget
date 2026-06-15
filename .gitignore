@@ -1,5 +1,6 @@
 # Runtime state — user-specific
 windows/usage-widget-settings.json
+windows/crash.log
 
 # Stream Deck output files — generated at runtime
 streamdeck/usage-5h.txt
