@@ -5,3 +5,4 @@ windows/crash.log
 # Stream Deck output files — generated at runtime
 streamdeck/usage-5h.txt
 streamdeck/usage-7d.txt
+*.bak-*
