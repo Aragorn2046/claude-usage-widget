@@ -478,7 +478,7 @@ $settings = Load-Settings
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="520" Height="580" MinWidth="320" MinHeight="200"
+        Width="520" Height="580" MinWidth="260" MinHeight="96"
         WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Topmost="False"
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
@@ -604,6 +604,51 @@ $xaml = @"
                     <TextBlock x:Name="SonnetLabel" Text="0.0%" Foreground="#9930D158"
                                FontSize="16" FontWeight="Bold" FontFamily="Consolas"
                                Grid.Column="2" Width="80" TextAlignment="Right"
+                               VerticalAlignment="Center"/>
+                </Grid>
+
+                <!-- ═══ KIMI K3 ALLEGRETTO QUOTA ═══ -->
+                <Border Height="1" Background="#2230D158" Margin="0 8 0 10"/>
+                <TextBlock Text="KIMI K3 · ALLEGRETTO" Foreground="#AA30D158"
+                           FontSize="20" FontFamily="Consolas" Margin="0 0 0 10"/>
+                <Grid Margin="0 0 0 4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="5H CYCLE" Foreground="#CC30D158" FontSize="24"
+                               FontFamily="Consolas" FontWeight="Bold" Width="200"
+                               VerticalAlignment="Center"/>
+                    <Border Background="#15309958" CornerRadius="1" Height="20"
+                            Margin="8 0 12 0" Grid.Column="1" VerticalAlignment="Center"
+                            BorderBrush="#3330D158" BorderThickness="1">
+                        <Border x:Name="KimiFiveBar" Background="#30D158" Width="0"
+                                CornerRadius="0" HorizontalAlignment="Left"/>
+                    </Border>
+                    <TextBlock x:Name="KimiFiveLabel" Text="--%" Foreground="#30D158"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               Grid.Column="2" Width="100" TextAlignment="Right"
+                               VerticalAlignment="Center"/>
+                </Grid>
+                <Grid Margin="0 0 0 4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="7D CYCLE" Foreground="#CC30D158" FontSize="24"
+                               FontFamily="Consolas" FontWeight="Bold" Width="200"
+                               VerticalAlignment="Center"/>
+                    <Border Background="#15309958" CornerRadius="1" Height="16"
+                            Margin="8 0 12 0" Grid.Column="1" VerticalAlignment="Center"
+                            BorderBrush="#3330D158" BorderThickness="1">
+                        <Border x:Name="KimiSevenBar" Background="#30D158" Width="0"
+                                CornerRadius="0" HorizontalAlignment="Left"/>
+                    </Border>
+                    <TextBlock x:Name="KimiSevenLabel" Text="--%" Foreground="#30D158"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               Grid.Column="2" Width="100" TextAlignment="Right"
                                VerticalAlignment="Center"/>
                 </Grid>
 
@@ -848,6 +893,10 @@ $sevenLabel = $window.FindName("SevenLabel")
 $sevenReset = $window.FindName("SevenReset")
 $sonnetBar   = $window.FindName("SonnetBar")
 $sonnetLabel = $window.FindName("SonnetLabel")
+$kimiFiveBar = $window.FindName("KimiFiveBar")
+$kimiFiveLabel = $window.FindName("KimiFiveLabel")
+$kimiSevenBar = $window.FindName("KimiSevenBar")
+$kimiSevenLabel = $window.FindName("KimiSevenLabel")
 $errorLabel = $window.FindName("ErrorLabel")
 $cpuBar     = $window.FindName("CpuBar")
 $cpuLabel   = $window.FindName("CpuLabel")
@@ -1704,7 +1753,7 @@ function Update-ElevenLabs($preData) {
     $elevenDetail.Foreground = $bc.ConvertFrom((Get-HueColor "#8830D158"))
 }
 
-function Update-Widget($preUsage, $preOutage) {
+function Update-Widget($preUsage, $preOutage, $preKimi) {
     $bc = [System.Windows.Media.BrushConverter]::new()
     $data = if ($preUsage) { $preUsage } else { Get-UsageData }
 
@@ -1789,6 +1838,25 @@ function Update-Widget($preUsage, $preOutage) {
         }
         $script:prevToastFivePct = $fp
         $script:prevToastSevenPct = $sp
+    }
+
+    if ($preKimi -and $preKimi.available) {
+        $kfc = Get-WYColor $preKimi.fivePct
+        $kimiFiveBar.Background = $bc.ConvertFrom($kfc.bar)
+        $kimiFiveBar.Width = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($preKimi.fivePct, 100) / 100))
+        $kimiFiveLabel.Text = "$($preKimi.fivePct)%"
+        $kimiFiveLabel.Foreground = $bc.ConvertFrom($kfc.text)
+
+        $ksc = Get-WYColor $preKimi.sevenPct
+        $kimiSevenBar.Background = $bc.ConvertFrom($ksc.bar)
+        $kimiSevenBar.Width = [math]::Max(2, [math]::Round($barMaxWidth * [math]::Min($preKimi.sevenPct, 100) / 100))
+        $kimiSevenLabel.Text = "$($preKimi.sevenPct)%"
+        $kimiSevenLabel.Foreground = $bc.ConvertFrom($ksc.text)
+    } elseif ($preKimi) {
+        $kimiFiveBar.Width = 0
+        $kimiSevenBar.Width = 0
+        $kimiFiveLabel.Text = "--%"
+        $kimiSevenLabel.Text = "--%"
     }
 
     # ── Outage Status ──
@@ -2381,6 +2449,7 @@ $window.Add_Loaded({
     $window.Topmost = $script:topmost
     Update-SysMetrics
     Update-Widget
+    $script:usageTicks = 1000000  # Fetch shared Claude + Kimi telemetry on the next tick.
     # Set initial ElevenLabs visibility and trigger first fetch
     if (-not $script:showElevenLabs -or -not $script:elevenLabsApiKey) {
         $elevenLabsPanel.Visibility = "Collapsed"
@@ -2544,6 +2613,7 @@ if ($wslCredPath -and (Test-Path $wslCredPath)) {
 }
 $unknownOutage = @{ ai = "unknown"; platform = "unknown"; api = "unknown"; code = "unknown" }
 $usageData = $null
+$kimiData = @{ available = $false; fivePct = 0; sevenPct = 0 }
 
 # Try proxy first — Day's EMOC server caches usage for 300s, shared across all consumers
 if ($usageProxyUrl) {
@@ -2571,6 +2641,24 @@ if ($usageProxyUrl) {
     } catch {
         # Proxy unavailable — fall through to direct Anthropic call
     }
+
+    # The EMOC frontier contract carries Kimi Code's Allegretto account quota.
+    try {
+        $frontierUrl = $usageProxyUrl -replace '/api/usage/.*$', '/api/widget/windows'
+        $frontierHeaders = @{}
+        $proxyTokenPath = Join-Path $env:USERPROFILE ".claude-usage\token"
+        if (Test-Path $proxyTokenPath) {
+            $frontierHeaders["Authorization"] = "Bearer $((Get-Content $proxyTokenPath -Raw).Trim())"
+        }
+        $frontier = Invoke-RestMethod -Uri $frontierUrl -Headers $frontierHeaders -Method GET -TimeoutSec 5 -ErrorAction Stop
+        $kimiFive = [double](($frontier.kimi_5h.text -replace '%', '').Trim())
+        $kimiSeven = [double](($frontier.kimi_7d.text -replace '%', '').Trim())
+        $kimiData = @{
+            available = $true
+            fivePct = [math]::Round($kimiFive, 1)
+            sevenPct = [math]::Round($kimiSeven, 1)
+        }
+    } catch {}
 }
 
 # Direct Anthropic call (proxy disabled, unavailable, or returned bad data)
@@ -2636,7 +2724,7 @@ try {
         if ($idMap.ContainsKey($comp.id)) { $outageData[$idMap[$comp.id]] = $comp.status }
     }
 } catch {}
-return @{ usage = $usageData; outage = $outageData }
+return @{ usage = $usageData; outage = $outageData; kimi = $kimiData }
 '@
 
 # Self-contained script for ElevenLabs usage (runs in background runspace)
@@ -2715,7 +2803,7 @@ $pollTimer.Add_Tick({
         try {
             $result = $script:usageJob.PS.EndInvoke($script:usageJob.Handle)
             if ($result -and $result.Count -gt 0) {
-                Update-Widget $result[0].usage $result[0].outage
+                Update-Widget $result[0].usage $result[0].outage $result[0].kimi
                 $script:lastDataUpdateTime = Get-Date
                 if ($result[0].usage.error -eq "RATE LIMITED") {
                     $script:backoffMultiplier = [math]::Min($script:backoffMultiplier * 2, 4)
