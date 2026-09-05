@@ -22,6 +22,10 @@ if (-not $mutex.WaitOne(0)) {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function Refresh-Token {
+    # READ-ONLY GUARD (2026-09-04): never rotate the Claude OAuth token from here.
+    # Claude Code in WSL owns the credential file; an out-of-band refresh invalidates
+    # its refresh token and wipes the Dawn login. Set $env:USAGE_MONITOR_ALLOW_REFRESH=1 to opt in.
+    if ($env:USAGE_MONITOR_ALLOW_REFRESH -ne "1") { return $false }
     $script:creds = Get-Content $credPath -Raw | ConvertFrom-Json
     $refreshToken = $creds.claudeAiOauth.refreshToken
     if (-not $refreshToken) { return $false }
